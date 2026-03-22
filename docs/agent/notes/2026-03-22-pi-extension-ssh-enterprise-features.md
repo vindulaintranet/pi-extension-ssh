@@ -68,5 +68,6 @@ The next agreed step was to also implement:
 - Confirmation flows are strongest in interactive mode; in non-interactive mode, protected flows may be blocked instead of confirmed.
 
 ## Next
-- Publish the package repository to GitHub.
-- Tag the first release after the final validation run.
+- GitHub repo published: `https://github.com/vindulaintranet/pi-extension-ssh`
+- First release published: `v0.1.0`
+- Release workflow updated to opt into Node 24 execution for JavaScript actions after the first release surfaced a Node 20 deprecation warning from `softprops/action-gh-release`.
