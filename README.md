@@ -1,37 +1,54 @@
 # pi-extension-ssh
 
-A public-ready [Pi](https://github.com/badlogic/pi-mono) package for remote operations over SSH, with both a useful public baseline and enterprise-oriented controls.
+[![CI](https://github.com/vindulaintranet/pi-extension-ssh/actions/workflows/ci.yml/badge.svg)](https://github.com/vindulaintranet/pi-extension-ssh/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/vindulaintranet/pi-extension-ssh)](https://github.com/vindulaintranet/pi-extension-ssh/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Created by [Fabio Rizzo Matos](https://github.com/fabiorizzomatos) · contact: `fabiorizzo@vindula.com.br`
+Remote operations for [Pi](https://github.com/badlogic/pi-mono) over SSH.
 
-## Why install this instead of just using `bash` + `ssh`
-
-This package is useful when you want SSH to become a **repeatable Pi capability**, not just an occasional shell trick.
-
-It gives you:
-- remote **session mode** with `--ssh`
-- remote routing for Pi tools:
-  - `read`
-  - `write`
-  - `edit`
-  - `bash`
-  - `grep`
-  - `find`
-  - `ls`
-- `/ssh-run` for explicit ad-hoc remote commands
-- local structured SSH **audit logging** in `.pi/ssh/ssh.log`
-- host **profiles**
+`pi-extension-ssh` turns SSH from an occasional shell escape into a repeatable Pi capability with:
+- remote **session mode**
+- remote tool routing
+- local **audit logging**
+- target **profiles**
 - **allowlist** support
 - environment **guardrails**
 - **confirmation for prod** and other protected targets
 
-That means Pi can operate with the remote host as the working environment instead of mixing local file tools with one-off SSH shell commands.
+Created by [Fabio Rizzo Matos](https://github.com/fabiorizzomatos) · contact: `fabiorizzo@vindula.com.br`
 
-## What this package does
+---
+
+## Why this exists
+
+You can already do this with plain shell commands:
+
+```bash
+ssh user@host "cd /srv/app && docker ps"
+```
+
+But that is not the same as giving Pi a real remote operating mode.
+
+With this package installed, Pi can treat the remote host as the working environment itself.
+
+That matters when you want:
+- repeatable remote sessions instead of one-off SSH hops
+- `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` operating remotely
+- an audit trail in `.pi/ssh/ssh.log`
+- stable target names like `prod-app`, `staging-app`, `bastion-eu`
+- environment-aware controls for sensitive systems
+
+In short:
+- **plain SSH** = good for ad-hoc commands
+- **pi-extension-ssh** = good for remote operations workflows
+
+---
+
+## What you get
 
 ### 1. Remote session mode
 
-Examples:
+Run a whole Pi session against a remote host:
 
 ```bash
 pi -e ./ssh.ts --ssh user@host
@@ -41,21 +58,19 @@ pi -e ./ssh.ts --ssh prod-app
 
 When `--ssh` is active:
 - Pi resolves a remote working directory
-- `read/write/edit/bash/grep/find/ls` operate on the remote machine
+- `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` operate on the remote machine
 - user `!commands` also execute remotely
-- the session status bar shows the remote target
+- the status bar shows the active remote target
 - the system prompt reflects the remote cwd and environment
 
 ### 2. `/ssh-run`
 
-Examples:
+Run a one-off remote command without switching the whole session:
 
 ```text
 /ssh-run user@host:/srv/app ls -la
 /ssh-run prod-app docker ps
 ```
-
-Use this when you want one explicit remote command without switching the whole session.
 
 ### 3. Audit logging
 
@@ -65,37 +80,89 @@ SSH activity is logged locally to:
 .pi/ssh/ssh.log
 ```
 
-Each line is structured JSON and includes metadata such as:
-- target remote
+Each line is structured JSON and can include metadata such as:
+- remote target
 - profile
 - environment
 - mode
 - decision (`executed`, `blocked`, `confirmed`, `denied`)
+- reason
 
-### 4. Host profiles and allowlist
+### 4. Profiles, allowlist, and guardrails
 
-The package supports project-local or global config files:
-
+The package supports project-local and global SSH config files:
 - project: `<project>/.pi/ssh/config.json`
 - global: `~/.pi/agent/ssh/config.json`
 
-Example:
+This lets you:
+- define friendly target names
+- restrict where Pi is allowed to connect
+- require confirmation for protected targets
+- block dangerous commands in certain environments
+
+---
+
+## Install
+
+### From GitHub
+
+```bash
+pi install git:github.com/vindulaintranet/pi-extension-ssh
+```
+
+### Pin to a release tag
+
+```bash
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.0
+```
+
+### From a local path
+
+```bash
+pi install /absolute/path/to/pi-extension-ssh
+```
+
+After installing, restart Pi or run:
+
+```text
+/reload
+```
+
+---
+
+## Quick start
+
+### Ad-hoc remote command
+
+```text
+/ssh-run user@host:/srv/app docker ps
+```
+
+### Full remote session
+
+```bash
+pi -e ./ssh.ts --ssh user@host:/srv/app
+```
+
+### Profile-based session
+
+Add a config file:
 
 ```json
 {
-  "allowlist": ["prod-app", "staging-app"],
+  "allowlist": ["staging-app", "prod-app"],
   "targets": {
+    "staging-app": {
+      "remote": "ops@staging-host",
+      "cwd": "/srv/app",
+      "environment": "staging"
+    },
     "prod-app": {
       "remote": "ops@prod-host",
       "cwd": "/srv/app",
       "environment": "prod",
       "requiresConfirmation": true,
       "aliases": ["production"]
-    },
-    "staging-app": {
-      "remote": "ops@staging-host",
-      "cwd": "/srv/app",
-      "environment": "staging"
     }
   },
   "environmentPolicies": {
@@ -113,22 +180,90 @@ Example:
 }
 ```
 
+Then run:
+
+```bash
+pi -e ./ssh.ts --ssh prod-app
+```
+
 List configured targets with:
 
 ```text
 /ssh-targets
 ```
 
+---
+
+## Commercial / real-world use cases
+
+### Production app operations
+Use profile-based access such as `prod-app` with confirmation and blocked commands for safer incident work.
+
+### Staging debugging
+Point Pi at `staging-app` and let it inspect logs, config, and code remotely with normal tools.
+
+### Bastion-based admin work
+Keep SSH targets named and documented instead of relying on remembered shell snippets.
+
+### Managed customer environments
+Use target profiles per customer/tenant/region and maintain a local audit trail of remote activity.
+
+---
+
+## Example config
+
+```json
+{
+  "allowlist": ["prod-app", "staging-app", "bastion-eu"],
+  "targets": {
+    "prod-app": {
+      "remote": "ops@prod-host",
+      "cwd": "/srv/app",
+      "environment": "prod",
+      "requiresConfirmation": true,
+      "aliases": ["production"]
+    },
+    "staging-app": {
+      "remote": "ops@staging-host",
+      "cwd": "/srv/app",
+      "environment": "staging"
+    },
+    "bastion-eu": {
+      "remote": "admin@bastion-eu",
+      "cwd": "/home/admin",
+      "environment": "default"
+    }
+  },
+  "environmentPolicies": {
+    "prod": {
+      "requiresConfirmation": true,
+      "confirmWriteOperations": true,
+      "confirmMutatingCommands": true,
+      "blockedCommands": [
+        "rm -rf",
+        "git reset --hard",
+        "terraform destroy",
+        "shutdown",
+        "reboot"
+      ]
+    }
+  }
+}
+```
+
+---
+
 ## Enterprise-oriented features included
 
-This package now includes the phase-2 capabilities agreed for the enterprise track:
-
+This package already includes the agreed enterprise track features:
 - **allowlist**
 - **host profiles**
 - remote **`grep` / `find` / `ls`**
 - **guardrails by environment**
 - **structured logs**
 - **confirmation for prod**
+
+---
 
 ## Requirements
 
@@ -143,12 +278,16 @@ This package now includes the phase-2 capabilities agreed for the enterprise tra
   - `rg` for remote `grep`
   - `fd` for remote `find`
 
+---
+
 ## Current limitations
 
-- `find` remote routing currently expects `fd` on the remote host
-- `grep` remote routing currently expects `rg` on the remote host
-- host profile switching is config-driven; this version does not yet add a full interactive connection manager
+- remote `find` currently expects `fd` on the remote host
+- remote `grep` currently expects `rg` on the remote host
+- target handling is config-driven; this version does not yet include a full interactive connection manager
 - logs are structured JSONL locally, but no external export sink is included yet
+
+---
 
 ## Validation
 
@@ -162,11 +301,15 @@ This runs:
 - bundle validation for the Pi extension entrypoint
 - package validation with `npm pack --dry-run`
 
+---
+
 ## Contributing and releasing
 
 See:
 - [CONTRIBUTING.md](./CONTRIBUTING.md)
 - [RELEASING.md](./RELEASING.md)
+
+---
 
 ## License
 
