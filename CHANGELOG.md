@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1
+
+- Adds `/ssh-connect` for interactive target selection
+- Adds `/ssh-disconnect`
+- Adds `/ssh-health`
+- Adds `/ssh-context`
+- Adds stronger environment-aware active target UI status/widget
+- Tightens confirmation-required policy behavior in non-interactive flows
+- Refreshes README with launch-ready UX and command documentation
+
 ## 0.1.0
 
 - Initial public-ready SSH package release

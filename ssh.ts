@@ -51,11 +51,29 @@ function joinShellArgs(args: string[]): string {
   return args.map(quoteArg).join(" ");
 }
 
+function getEnvironmentTone(environment: string): "error" | "warning" | "success" | "accent" {
+  if (environment === "prod") return "error";
+  if (environment === "staging") return "warning";
+  if (environment === "dev") return "success";
+  return "accent";
+}
+
+function formatEnvironmentBadge(environment: string): string {
+  return environment ? environment.toUpperCase() : "DEFAULT";
+}
+
 function formatTargetLabel(target: ResolvedSshTarget): string {
   const base = target.profile ? `${target.profile} -> ${target.remote}` : target.remote;
   const cwd = target.remoteCwd ? `:${target.remoteCwd}` : "";
   const environment = target.environment && target.environment !== "default" ? ` [${target.environment}]` : "";
   return `${base}${cwd}${environment}`;
+}
+
+function formatTargetChoice(target: { name: string; remote: string; cwd?: string; environment: string }, active: boolean): string {
+  const cwd = target.cwd ? `:${target.cwd}` : "";
+  const env = target.environment && target.environment !== "default" ? ` [${target.environment}]` : "";
+  const suffix = active ? " [ACTIVE]" : "";
+  return `${target.name} -> ${target.remote}${cwd}${env}${suffix}`;
 }
 
 function buildPolicyLog(
@@ -80,6 +98,35 @@ function buildPolicyLog(
       reason,
     },
     logPath,
+  );
+}
+
+function clearTargetUi(ctx: ExtensionContext): void {
+  if (!ctx.hasUI) return;
+  ctx.ui.setStatus("ssh", undefined);
+  ctx.ui.setWidget("ssh-active", undefined);
+}
+
+function updateTargetUi(ctx: ExtensionContext, target: ResolvedSshTarget | null, logPath: string | null): void {
+  if (!ctx.hasUI) return;
+  if (!target) {
+    clearTargetUi(ctx);
+    return;
+  }
+
+  const tone = getEnvironmentTone(target.environment);
+  const envBadge = formatEnvironmentBadge(target.environment);
+  const label = formatTargetLabel(target);
+  ctx.ui.setStatus("ssh", ctx.ui.theme.fg(tone, `SSH ${envBadge}: ${label}`));
+  const relativeLogPath = logPath ? path.relative(ctx.cwd, logPath) || logPath : ".pi/ssh/ssh.log";
+  ctx.ui.setWidget(
+    "ssh-active",
+    [
+      `SSH ${envBadge} · ${label}`,
+      `Commands: /ssh-context · /ssh-health · /ssh-disconnect`,
+      `Log: ${relativeLogPath}`,
+    ],
+    { placement: "belowEditor" },
   );
 }
 
@@ -136,6 +183,30 @@ async function remoteExists(target: ResolvedSshTarget, absoluteRemotePath: strin
     "session",
   );
   return output.toString().trim() === "1";
+}
+
+async function getRemotePwd(target: ResolvedSshTarget, cwd: string, logPath: string | null): Promise<string> {
+  return (await sshExec(target, "pwd", "pwd", cwd, logPath, "session")).toString().trim();
+}
+
+async function collectHealthDetails(target: ResolvedSshTarget, cwd: string, logPath: string | null): Promise<string> {
+  const probe = [
+    "pwd",
+    'for cmd in bash cat test mkdir base64 file rg fd; do',
+    '  if command -v "$cmd" >/dev/null 2>&1; then printf "%s=ok\\n" "$cmd"; else printf "%s=missing\\n" "$cmd"; fi',
+    "done",
+  ].join("; ");
+  return (await sshExec(target, probe, "health", cwd, logPath, "command")).toString().trim();
+}
+
+function parseHealthDetails(raw: string): { pwd: string; checks: Array<{ name: string; status: string }> } {
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const pwd = lines[0] ?? "(unknown)";
+  const checks = lines.slice(1).map((line) => {
+    const [name, status] = line.split("=");
+    return { name: name || "unknown", status: status || "unknown" };
+  });
+  return { pwd, checks };
 }
 
 function createRemoteReadOps(target: ResolvedSshTarget, localCwd: string, logPath: string | null): ReadOperations {
@@ -230,12 +301,11 @@ function createRemoteLsOps(target: ResolvedSshTarget, localCwd: string, logPath:
         logPath,
         "session",
       );
-      const lines = output
+      return output
         .toString()
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
-      return lines;
     },
   };
 }
@@ -398,6 +468,14 @@ export default function sshExtension(pi: ExtensionAPI) {
     return sshConfig;
   };
 
+  const disconnectTarget = (ctx: ExtensionContext, reason?: string): void => {
+    activeTarget = null;
+    clearTargetUi(ctx);
+    if (ctx.hasUI && reason) {
+      ctx.ui.notify(reason, "info");
+    }
+  };
+
   const confirmTarget = async (
     ctx: ExtensionContext,
     target: ResolvedSshTarget,
@@ -430,12 +508,39 @@ export default function sshExtension(pi: ExtensionAPI) {
       return false;
     }
 
-    const policy = getEnvironmentPolicy(target.environment, sshConfig);
-    if (policy.requiresConfirmation && !(await confirmTarget(ctx, target, "This target requires confirmation.", commandForLog))) {
+    if (target.requiresConfirmation && !(await confirmTarget(ctx, target, "This target requires confirmation.", commandForLog))) {
       ctx.hasUI ? ctx.ui.notify("SSH action cancelled.", "warning") : console.warn("SSH action cancelled.");
       return false;
     }
 
+    return true;
+  };
+
+  const ensureTargetReady = async (ctx: ExtensionContext, target: ResolvedSshTarget, commandForLog: string): Promise<ResolvedSshTarget | null> => {
+    if (!(await validateTarget(ctx, target, commandForLog))) {
+      return null;
+    }
+    if (!target.remoteCwd) {
+      try {
+        target.remoteCwd = await getRemotePwd(target, ctx.cwd, getLogPath());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.hasUI ? ctx.ui.notify(`SSH target failed: ${message}`, "error") : console.error(message);
+        return null;
+      }
+    }
+    return target;
+  };
+
+  const activateTarget = async (ctx: ExtensionContext, target: ResolvedSshTarget, commandForLog: string): Promise<boolean> => {
+    const readyTarget = await ensureTargetReady(ctx, target, commandForLog);
+    if (!readyTarget) return false;
+    activeTarget = readyTarget;
+    updateTargetUi(ctx, readyTarget, getLogPath());
+    if (ctx.hasUI) {
+      ctx.ui.notify(`SSH mode: ${formatTargetLabel(readyTarget)}`, "info");
+      ctx.ui.notify(`SSH log: ${path.relative(ctx.cwd, getLogPath() ?? "")}`, "info");
+    }
     return true;
   };
 
@@ -466,16 +571,15 @@ export default function sshExtension(pi: ExtensionAPI) {
         return;
       }
 
-      if (!(await validateTarget(ctx, target, parsed.command))) {
-        return;
-      }
+      const readyTarget = await ensureTargetReady(ctx, target, parsed.command);
+      if (!readyTarget) return;
 
-      const fullCommand = buildRemoteCommand(target.remoteCwd, parsed.command);
+      const fullCommand = buildRemoteCommand(readyTarget.remoteCwd, parsed.command);
       try {
-        const output = await sshExec(target, fullCommand, "ssh-run", ctx.cwd, getLogPath(), "command");
+        const output = await sshExec(readyTarget, fullCommand, "ssh-run", ctx.cwd, getLogPath(), "command");
         const result = truncateOutput(output.toString());
         if (ctx.hasUI) {
-          await ctx.ui.editor(`SSH: ${formatTargetLabel(target)}`, result || "(no output)");
+          await ctx.ui.editor(`SSH: ${formatTargetLabel(readyTarget)}`, result || "(no output)");
         } else {
           console.log(result || "(no output)");
         }
@@ -495,16 +599,134 @@ export default function sshExtension(pi: ExtensionAPI) {
         ctx.hasUI ? ctx.ui.notify("No SSH target profiles configured.", "info") : console.log("No SSH target profiles configured.");
         return;
       }
-      const lines = targets.map((target) => {
-        const cwdLabel = target.cwd ? `:${target.cwd}` : "";
-        const envLabel = target.environment && target.environment !== "default" ? ` [${target.environment}]` : "";
-        return `- ${target.name} -> ${target.remote}${cwdLabel}${envLabel}`;
-      });
+      const activeProfile = getTarget()?.profile;
+      const lines = targets.map((target) => `- ${formatTargetChoice(target, target.name === activeProfile)}`);
       const message = lines.join("\n");
       if (ctx.hasUI) {
         await ctx.ui.editor("SSH Targets", message);
       } else {
         console.log(message);
+      }
+    },
+  });
+
+  pi.registerCommand("ssh-connect", {
+    description: "Interactively connect to a configured SSH target or pass one explicitly",
+    handler: async (args, ctx) => {
+      reloadConfig(ctx.cwd);
+      logPath = ensureLogPath(ctx.cwd, logPath);
+
+      let reference = String(args || "").trim();
+      if (!reference) {
+        const targets = listConfiguredTargets(sshConfig);
+        if (targets.length === 0) {
+          ctx.hasUI ? ctx.ui.notify("No SSH targets configured. Create .pi/ssh/config.json first.", "warning") : console.log("No SSH targets configured. Create .pi/ssh/config.json first.");
+          return;
+        }
+        if (!ctx.hasUI) {
+          console.log("Usage: /ssh-connect <target>");
+          return;
+        }
+        const items = targets.map((target) => formatTargetChoice(target, target.name === getTarget()?.profile));
+        const selected = await ctx.ui.select("Select SSH target", items);
+        if (!selected) return;
+        const selectedTarget = targets[items.indexOf(selected)];
+        reference = selectedTarget?.name || "";
+      }
+
+      const target = resolveSshTarget(reference, sshConfig);
+      if (!target) {
+        ctx.hasUI ? ctx.ui.notify("Could not resolve SSH target.", "error") : console.error("Could not resolve SSH target.");
+        return;
+      }
+
+      await activateTarget(ctx, target, `connect ${reference}`);
+    },
+  });
+
+  pi.registerCommand("ssh-disconnect", {
+    description: "Disconnect the current SSH session target",
+    handler: async (_args, ctx) => {
+      if (!getTarget()) {
+        ctx.hasUI ? ctx.ui.notify("No active SSH target.", "info") : console.log("No active SSH target.");
+        return;
+      }
+      disconnectTarget(ctx, "SSH session disconnected.");
+    },
+  });
+
+  pi.registerCommand("ssh-context", {
+    description: "Show the current SSH context, policies, and log path",
+    handler: async (_args, ctx) => {
+      reloadConfig(ctx.cwd);
+      const target = getTarget();
+      if (!target) {
+        ctx.hasUI ? ctx.ui.notify("No active SSH target.", "info") : console.log("No active SSH target.");
+        return;
+      }
+      const policy = getEnvironmentPolicy(target.environment, sshConfig);
+      const allowlistEnabled = sshConfig.allowlist.length > 0 ? "yes" : "no";
+      const blockedCommands = policy.blockedCommands?.length ? policy.blockedCommands.join(", ") : "(none)";
+      const logFilePath = getLogPath() ? path.relative(ctx.cwd, getLogPath()!) || getLogPath()! : ".pi/ssh/ssh.log";
+      const message = [
+        `Target: ${formatTargetLabel(target)}`,
+        `Remote: ${target.remote}`,
+        `Remote cwd: ${target.remoteCwd || "(resolved on demand)"}`,
+        `Environment: ${target.environment}`,
+        `Profile: ${target.profile || "(raw target)"}`,
+        `Allowlist enabled: ${allowlistEnabled}`,
+        `Requires confirmation: ${target.requiresConfirmation ? "yes" : "no"}`,
+        `Confirm write operations: ${policy.confirmWriteOperations ? "yes" : "no"}`,
+        `Confirm mutating bash commands: ${policy.confirmMutatingCommands ? "yes" : "no"}`,
+        `Blocked commands: ${blockedCommands}`,
+        `Log: ${logFilePath}`,
+      ].join("\n");
+      if (ctx.hasUI) {
+        await ctx.ui.editor("SSH Context", message);
+      } else {
+        console.log(message);
+      }
+    },
+  });
+
+  pi.registerCommand("ssh-health", {
+    description: "Check SSH connectivity and required remote tools for the current or a named target",
+    handler: async (args, ctx) => {
+      reloadConfig(ctx.cwd);
+      logPath = ensureLogPath(ctx.cwd, logPath);
+      const reference = String(args || "").trim();
+      const target = reference ? resolveSshTarget(reference, sshConfig) : getTarget();
+      if (!target) {
+        const message = reference ? "Could not resolve SSH target." : "No active SSH target. Pass a target or connect first.";
+        ctx.hasUI ? ctx.ui.notify(message, "warning") : console.log(message);
+        return;
+      }
+
+      const readyTarget = await ensureTargetReady(ctx, { ...target }, `health ${reference || target.reference}`);
+      if (!readyTarget) return;
+
+      try {
+        const raw = await collectHealthDetails(readyTarget, ctx.cwd, getLogPath());
+        const { pwd, checks } = parseHealthDetails(raw);
+        const missing = checks.filter((check) => check.status !== "ok");
+        const lines = [
+          `Target: ${formatTargetLabel(readyTarget)}`,
+          `Connection: OK`,
+          `pwd: ${pwd}`,
+          "",
+          "Checks:",
+          ...checks.map((check) => `- ${check.name}: ${check.status}`),
+        ];
+        const message = lines.join("\n");
+        if (ctx.hasUI) {
+          await ctx.ui.editor("SSH Health", message);
+          ctx.ui.notify(missing.length === 0 ? "SSH health check passed." : `SSH health check found ${missing.length} missing tools.`, missing.length === 0 ? "info" : "warning");
+        } else {
+          console.log(message);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.hasUI ? ctx.ui.notify(`SSH health failed: ${message}`, "error") : console.error(message);
       }
     },
   });
@@ -611,8 +833,12 @@ export default function sshExtension(pi: ExtensionAPI) {
     const target = getTarget();
     if (target && ["write", "edit"].includes(event.toolName)) {
       const policy = getEnvironmentPolicy(target.environment, sshConfig);
-      if (policy.confirmWriteOperations && ctx.hasUI) {
-        const filePath = (event.input as { path?: string } | undefined)?.path || "(unknown path)";
+      const filePath = (event.input as { path?: string } | undefined)?.path || "(unknown path)";
+      if (policy.confirmWriteOperations) {
+        if (!ctx.hasUI) {
+          buildPolicyLog(target, `tool:${event.toolName} ${filePath}`, "blocked", "Remote write requires interactive confirmation", ctx.cwd, getLogPath()!);
+          return { block: true, reason: "Remote write requires interactive confirmation" };
+        }
         const confirmed = await ctx.ui.confirm(
           "Confirm remote write",
           `Environment ${target.environment} requires confirmation for remote write operations.\n\nTarget: ${formatTargetLabel(target)}\nPath: ${filePath}`,
@@ -634,7 +860,11 @@ export default function sshExtension(pi: ExtensionAPI) {
           buildPolicyLog(target, command, "blocked", blockedReason, ctx.cwd, getLogPath()!);
           return { block: true, reason: blockedReason };
         }
-        if (policy.confirmMutatingCommands && isPotentiallyMutatingCommand(command) && ctx.hasUI) {
+        if (policy.confirmMutatingCommands && isPotentiallyMutatingCommand(command)) {
+          if (!ctx.hasUI) {
+            buildPolicyLog(target, command, "blocked", "Mutating remote command requires interactive confirmation", ctx.cwd, getLogPath()!);
+            return { block: true, reason: "Mutating remote command requires interactive confirmation" };
+          }
           const confirmed = await ctx.ui.confirm(
             "Confirm remote command",
             `Environment ${target.environment} requires confirmation for mutating remote bash commands.\n\nTarget: ${formatTargetLabel(target)}\nCommand: ${command}`,
@@ -659,7 +889,11 @@ export default function sshExtension(pi: ExtensionAPI) {
             buildPolicyLog(resolved, command, "blocked", "Target not present in SSH allowlist", ctx.cwd, getLogPath()!);
             return { block: true, reason: "SSH target blocked by allowlist" };
           }
-          if (resolved.requiresConfirmation && ctx.hasUI) {
+          if (resolved.requiresConfirmation) {
+            if (!ctx.hasUI) {
+              buildPolicyLog(resolved, command, "blocked", "Direct SSH command requires interactive confirmation", ctx.cwd, getLogPath()!);
+              return { block: true, reason: "Direct SSH command requires interactive confirmation" };
+            }
             const confirmed = await ctx.ui.confirm(
               "Confirm direct SSH command",
               `This SSH target requires confirmation.\n\nTarget: ${formatTargetLabel(resolved)}\nCommand: ${command}`,
@@ -707,7 +941,10 @@ export default function sshExtension(pi: ExtensionAPI) {
     reloadConfig(ctx.cwd);
     logPath = ensureLogPath(ctx.cwd, logPath);
     const arg = pi.getFlag("ssh") as string | undefined;
-    if (!arg) return;
+    if (!arg) {
+      updateTargetUi(ctx, getTarget(), getLogPath());
+      return;
+    }
 
     const target = resolveSshTarget(arg, sshConfig);
     if (!target) {
@@ -715,27 +952,7 @@ export default function sshExtension(pi: ExtensionAPI) {
       return;
     }
 
-    if (!(await validateTarget(ctx, target, `connect ${arg}`))) {
-      return;
-    }
-
-    if (!target.remoteCwd) {
-      try {
-        const pwd = (await sshExec(target, "pwd", "pwd", ctx.cwd, getLogPath(), "session")).toString().trim();
-        target.remoteCwd = pwd;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.hasUI ? ctx.ui.notify(`SSH target failed: ${message}`, "error") : console.error(message);
-        return;
-      }
-    }
-
-    activeTarget = target;
-    if (ctx.hasUI) {
-      ctx.ui.setStatus("ssh", ctx.ui.theme.fg("accent", `SSH: ${formatTargetLabel(target)}`));
-      ctx.ui.notify(`SSH mode: ${formatTargetLabel(target)}`, "info");
-      ctx.ui.notify(`SSH log: ${path.relative(ctx.cwd, getLogPath() ?? "")}`, "info");
-    }
+    await activateTarget(ctx, target, `connect ${arg}`);
   });
 
   pi.on("user_bash", async (event, ctx) => {

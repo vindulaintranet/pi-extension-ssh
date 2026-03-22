@@ -113,7 +113,7 @@ pi install git:github.com/vindulaintranet/pi-extension-ssh
 ### Pin to a release tag
 
 ```bash
-pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.0
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.1
 ```
 
 ### From a local path
@@ -142,6 +142,20 @@ After installing, restart Pi or run:
 
 ```bash
 pi -e ./ssh.ts --ssh user@host:/srv/app
+```
+
+### Interactive profile connection
+
+```text
+/ssh-connect
+```
+
+### SSH operations context
+
+```text
+/ssh-context
+/ssh-health
+/ssh-disconnect
 ```
 
 ### Profile-based session
@@ -191,6 +205,15 @@ List configured targets with:
 ```text
 /ssh-targets
 ```
+
+## Operational commands
+
+- `/ssh-connect` — choose a configured target interactively or pass one explicitly
+- `/ssh-disconnect` — leave the active SSH session target
+- `/ssh-context` — inspect the active target, policies, and log path
+- `/ssh-health [target]` — verify connectivity and required remote tools
+- `/ssh-targets` — list configured profiles
+- `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
 
 ---
 
