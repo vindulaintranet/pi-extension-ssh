@@ -1,0 +1,48 @@
+{
+  "name": "@vindulaintranet/pi-extension-ssh",
+  "version": "0.1.0",
+  "description": "Pi package for remote operations over SSH with session mode, command mode, and local audit logging",
+  "author": "Fabio Rizzo Matos <fabiorizzo@vindula.com.br> (https://github.com/fabiorizzomatos)",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "ssh",
+    "remote-operations",
+    "enterprise"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vindulaintranet/pi-extension-ssh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vindulaintranet/pi-extension-ssh/issues"
+  },
+  "homepage": "https://github.com/vindulaintranet/pi-extension-ssh#readme",
+  "scripts": {
+    "test": "tsx --test test/**/*.test.ts",
+    "check:bundle": "esbuild ssh.ts --bundle --platform=node --format=cjs --outfile=/tmp/pi-extension-ssh-check.js --external:@mariozechner/pi-coding-agent",
+    "check:pack": "npm pack --dry-run",
+    "validate": "npm test && npm run check:bundle && npm run check:pack"
+  },
+  "pi": {
+    "extensions": [
+      "./ssh.ts"
+    ]
+  },
+  "files": [
+    "ssh.ts",
+    "ssh-core.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/agent/notes"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.11",
+    "tsx": "^4.20.6"
+  }
+}
