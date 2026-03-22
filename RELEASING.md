@@ -37,3 +37,11 @@ The GitHub release workflow should:
 - create the package tarball
 - create a GitHub Release
 - attach the `.tgz` artifact
+
+## Recommended release notes focus
+
+For this package, release notes should always call out changes in:
+- remote tool routing (`read/write/edit/bash/grep/find/ls`)
+- profiles / allowlist behavior
+- environment policies and confirmations
+- audit logging format

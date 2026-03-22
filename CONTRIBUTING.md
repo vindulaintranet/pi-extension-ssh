@@ -38,7 +38,11 @@ A good PR should include:
 - what changed
 - why it changed
 - how it was tested
-- any impact on SSH behavior, logging, or remote safety
+- any impact on SSH behavior, logging, host policies, or remote safety
+
+## Config-related changes
+
+If your change affects profiles, allowlists, or environment policies, include at least one example config snippet in the PR description or README update.
 
 ## Update behavior for Pi users
 
