@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   buildRemoteCommand,
   ensureLogPath,
+  filterSshLogEntries,
+  formatSshLogSummary,
   getBlockedCommandReason,
   getEnvironmentPolicy,
   isPotentiallyMutatingCommand,
@@ -17,7 +19,9 @@ import {
   normalizeSshConfig,
   parseSshInvocation,
   parseSshTarget,
+  readSshLogEntries,
   resolveSshTarget,
+  summarizeSshLogEntries,
   truncateOutput,
 } from "../ssh-core.ts";
 
@@ -235,4 +239,69 @@ test("listConfiguredTargets returns sorted targets", () => {
 
   const names = listConfiguredTargets(config).map((target) => target.name);
   assert.deepEqual(names, ["alpha", "zebra"]);
+});
+
+test("read/filter/summarize SSH logs support session export flows", async () => {
+  await withTempDir(async (dir) => {
+    const logPath = ensureLogPath(dir, null);
+    logSshCall(
+      {
+        remote: "ops@prod-host",
+        command: "connect prod-app",
+        type: "session-start",
+        cwd: dir,
+        mode: "session",
+        environment: "prod",
+        profile: "prod-app",
+        decision: "executed",
+      },
+      logPath,
+    );
+    logSshCall(
+      {
+        remote: "ops@prod-host",
+        command: "docker ps",
+        type: "bash",
+        cwd: dir,
+        mode: "session",
+        environment: "prod",
+        profile: "prod-app",
+        decision: "executed",
+      },
+      logPath,
+    );
+    logSshCall(
+      {
+        remote: "ops@prod-host",
+        command: "rm -rf /tmp/foo",
+        type: "policy",
+        cwd: dir,
+        mode: "policy",
+        environment: "prod",
+        profile: "prod-app",
+        decision: "blocked",
+        reason: "Blocked by SSH environment policy: rm -rf",
+      },
+      logPath,
+    );
+
+    const entries = readSshLogEntries(logPath);
+    const filtered = filterSshLogEntries(entries, {
+      remote: "ops@prod-host",
+      profile: "prod-app",
+      startedAt: entries[0]!.timestamp,
+      endedAt: entries[entries.length - 1]!.timestamp,
+    });
+    const summary = summarizeSshLogEntries(filtered);
+    const markdown = formatSshLogSummary(summary, "markdown");
+
+    assert.equal(filtered.length, 3);
+    assert.equal(summary.totalEntries, 3);
+    assert.equal(summary.decisions.executed, 2);
+    assert.equal(summary.decisions.blocked, 1);
+    assert.equal(summary.operationTypes.policy, 1);
+    assert.match(markdown, /SSH Session Summary/);
+    assert.match(markdown, /blocked: 1/);
+    assert.match(markdown, /rm -rf \/tmp\/foo/);
+  });
 });

@@ -23,6 +23,26 @@ export interface SshLogEntry {
   reason?: string;
 }
 
+export interface SshLogWindow {
+  remote: string;
+  startedAt: string;
+  endedAt?: string;
+  profile?: string;
+}
+
+export interface SshLogSummary {
+  startedAt?: string;
+  endedAt?: string;
+  durationSeconds: number | null;
+  totalEntries: number;
+  decisions: Record<string, number>;
+  operationTypes: Record<string, number>;
+  remotes: string[];
+  environments: string[];
+  profiles: string[];
+  recentEntries: Array<Pick<SshLogEntry, "timestamp" | "type" | "decision" | "command" | "reason">>;
+}
+
 export interface ParsedSshTarget {
   remote: string;
   remoteCwd?: string;
@@ -485,4 +505,136 @@ export function parseSshInvocation(command: string): { remote: string; command: 
 export function buildRemoteCommand(remoteCwd: string | undefined, command: string): string {
   if (!remoteCwd) return command;
   return `cd ${JSON.stringify(remoteCwd)} && ${command}`;
+}
+
+export function readSshLogEntries(logFilePath: string): SshLogEntry[] {
+  try {
+    if (!fs.existsSync(logFilePath)) return [];
+    return fs
+      .readFileSync(logFilePath, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as SshLogEntry];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+export function filterSshLogEntries(entries: SshLogEntry[], window: SshLogWindow): SshLogEntry[] {
+  const start = Date.parse(window.startedAt);
+  const end = window.endedAt ? Date.parse(window.endedAt) + 1000 : Number.POSITIVE_INFINITY;
+
+  return entries.filter((entry) => {
+    const timestamp = Date.parse(entry.timestamp);
+    if (!Number.isFinite(timestamp) || timestamp < start || timestamp > end) return false;
+    if (entry.remote !== window.remote) return false;
+    if (window.profile && entry.profile && entry.profile !== window.profile) return false;
+    return true;
+  });
+}
+
+export function summarizeSshLogEntries(entries: SshLogEntry[]): SshLogSummary {
+  const decisions: Record<string, number> = {};
+  const operationTypes: Record<string, number> = {};
+  const remotes = new Set<string>();
+  const environments = new Set<string>();
+  const profiles = new Set<string>();
+
+  for (const entry of entries) {
+    if (entry.decision) decisions[entry.decision] = (decisions[entry.decision] ?? 0) + 1;
+    operationTypes[entry.type] = (operationTypes[entry.type] ?? 0) + 1;
+    if (entry.remote) remotes.add(entry.remote);
+    if (entry.environment) environments.add(entry.environment);
+    if (entry.profile) profiles.add(entry.profile);
+  }
+
+  const startedAt = entries[0]?.timestamp;
+  const endedAt = entries[entries.length - 1]?.timestamp;
+  const durationSeconds = startedAt && endedAt ? Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 1000)) : null;
+
+  return {
+    startedAt,
+    endedAt,
+    durationSeconds,
+    totalEntries: entries.length,
+    decisions,
+    operationTypes,
+    remotes: [...remotes],
+    environments: [...environments],
+    profiles: [...profiles],
+    recentEntries: entries.slice(-20).map((entry) => ({
+      timestamp: entry.timestamp,
+      type: entry.type,
+      decision: entry.decision,
+      command: entry.command,
+      reason: entry.reason,
+    })),
+  };
+}
+
+export function formatSshLogSummary(summary: SshLogSummary, format: "text" | "markdown" | "json" = "text"): string {
+  if (format === "json") {
+    return JSON.stringify(summary, null, 2);
+  }
+
+  const decisionLines = Object.entries(summary.decisions)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([decision, count]) => `${decision}: ${count}`);
+  const typeLines = Object.entries(summary.operationTypes)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([type, count]) => `${type}: ${count}`);
+  const recentLines = summary.recentEntries.map((entry) => {
+    const reason = entry.reason ? ` (${entry.reason})` : "";
+    return `${entry.timestamp} · ${entry.type} · ${entry.decision || "n/a"} · ${entry.command}${reason}`;
+  });
+
+  if (format === "markdown") {
+    return [
+      "# SSH Session Summary",
+      "",
+      `- Started: ${summary.startedAt || "(unknown)"}`,
+      `- Ended: ${summary.endedAt || "(unknown)"}`,
+      `- Duration: ${summary.durationSeconds === null ? "(unknown)" : `${summary.durationSeconds}s`}`,
+      `- Entries: ${summary.totalEntries}`,
+      `- Remotes: ${summary.remotes.join(", ") || "(none)"}`,
+      `- Environments: ${summary.environments.join(", ") || "(none)"}`,
+      `- Profiles: ${summary.profiles.join(", ") || "(none)"}`,
+      "",
+      "## Decisions",
+      ...(decisionLines.length > 0 ? decisionLines.map((line) => `- ${line}`) : ["- (none)"]),
+      "",
+      "## Operation types",
+      ...(typeLines.length > 0 ? typeLines.map((line) => `- ${line}`) : ["- (none)"]),
+      "",
+      "## Recent entries",
+      ...(recentLines.length > 0 ? recentLines.map((line) => `- ${line}`) : ["- (none)"]),
+    ].join("\n");
+  }
+
+  return [
+    "SSH Session Summary",
+    `Started: ${summary.startedAt || "(unknown)"}`,
+    `Ended: ${summary.endedAt || "(unknown)"}`,
+    `Duration: ${summary.durationSeconds === null ? "(unknown)" : `${summary.durationSeconds}s`}`,
+    `Entries: ${summary.totalEntries}`,
+    `Remotes: ${summary.remotes.join(", ") || "(none)"}`,
+    `Environments: ${summary.environments.join(", ") || "(none)"}`,
+    `Profiles: ${summary.profiles.join(", ") || "(none)"}`,
+    "",
+    "Decisions:",
+    ...(decisionLines.length > 0 ? decisionLines.map((line) => `- ${line}`) : ["- (none)"]),
+    "",
+    "Operation types:",
+    ...(typeLines.length > 0 ? typeLines.map((line) => `- ${line}`) : ["- (none)"]),
+    "",
+    "Recent entries:",
+    ...(recentLines.length > 0 ? recentLines.map((line) => `- ${line}`) : ["- (none)"]),
+  ].join("\n");
 }

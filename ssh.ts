@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
@@ -20,6 +21,8 @@ import {
   SSH_PROMPT_HINT,
   buildRemoteCommand,
   ensureLogPath,
+  filterSshLogEntries,
+  formatSshLogSummary,
   getBlockedCommandReason,
   getEnvironmentPolicy,
   isPotentiallyMutatingCommand,
@@ -30,7 +33,9 @@ import {
   mapLocalPathToRemote,
   parseSshInvocation,
   parseSshTarget,
+  readSshLogEntries,
   resolveSshTarget,
+  summarizeSshLogEntries,
   truncateOutput,
   type ResolvedSshTarget,
   type SshConfig,
@@ -101,13 +106,59 @@ function buildPolicyLog(
   );
 }
 
+type SshHealthReport = {
+  checkedAt: string;
+  pwd: string;
+  checks: Array<{ name: string; status: string }>;
+  missingTools: string[];
+  status: "ok" | "warning";
+};
+
+type SshSessionState = {
+  target: ResolvedSshTarget;
+  startedAt: string;
+  endedAt?: string;
+  disconnectReason?: string;
+  lastPreflight?: SshHealthReport;
+};
+
+type SshSummaryFormat = "text" | "markdown" | "json";
+
+function formatPreflightState(report: SshHealthReport | undefined): string {
+  if (!report) return "Preflight: pending";
+  if (report.missingTools.length === 0) return `Preflight: OK (${report.checkedAt})`;
+  return `Preflight warnings: missing ${report.missingTools.join(", ")}`;
+}
+
+function formatHealthReport(target: ResolvedSshTarget, report: SshHealthReport, title = "SSH Health"): string {
+  return [
+    `${title}`,
+    `Target: ${formatTargetLabel(target)}`,
+    `Connection: OK`,
+    `pwd: ${report.pwd}`,
+    `Checked at: ${report.checkedAt}`,
+    report.missingTools.length === 0 ? "Missing tools: none" : `Missing tools: ${report.missingTools.join(", ")}`,
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.name}: ${check.status}`),
+  ].join("\n");
+}
+
+function formatDuration(startedAt: string, endedAt?: string): string {
+  const start = Date.parse(startedAt);
+  const end = endedAt ? Date.parse(endedAt) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "(unknown)";
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  return `${seconds}s`;
+}
+
 function clearTargetUi(ctx: ExtensionContext): void {
   if (!ctx.hasUI) return;
   ctx.ui.setStatus("ssh", undefined);
   ctx.ui.setWidget("ssh-active", undefined);
 }
 
-function updateTargetUi(ctx: ExtensionContext, target: ResolvedSshTarget | null, logPath: string | null): void {
+function updateTargetUi(ctx: ExtensionContext, target: ResolvedSshTarget | null, logPath: string | null, session?: SshSessionState | null): void {
   if (!ctx.hasUI) return;
   if (!target) {
     clearTargetUi(ctx);
@@ -123,7 +174,8 @@ function updateTargetUi(ctx: ExtensionContext, target: ResolvedSshTarget | null,
     "ssh-active",
     [
       `SSH ${envBadge} · ${label}`,
-      `Commands: /ssh-context · /ssh-health · /ssh-disconnect`,
+      formatPreflightState(session?.lastPreflight),
+      `Commands: /ssh-context · /ssh-health · /ssh-summary · /ssh-disconnect`,
       `Log: ${relativeLogPath}`,
     ],
     { placement: "belowEditor" },
@@ -207,6 +259,19 @@ function parseHealthDetails(raw: string): { pwd: string; checks: Array<{ name: s
     return { name: name || "unknown", status: status || "unknown" };
   });
   return { pwd, checks };
+}
+
+async function runHealthCheck(target: ResolvedSshTarget, cwd: string, logPath: string | null): Promise<SshHealthReport> {
+  const raw = await collectHealthDetails(target, cwd, logPath);
+  const { pwd, checks } = parseHealthDetails(raw);
+  const missingTools = checks.filter((check) => check.status !== "ok").map((check) => check.name);
+  return {
+    checkedAt: new Date().toISOString(),
+    pwd,
+    checks,
+    missingTools,
+    status: missingTools.length === 0 ? "ok" : "warning",
+  };
 }
 
 function createRemoteReadOps(target: ResolvedSshTarget, localCwd: string, logPath: string | null): ReadOperations {
@@ -458,21 +523,65 @@ export default function sshExtension(pi: ExtensionAPI) {
   const localGrep = createGrepTool(localCwd);
 
   let activeTarget: ResolvedSshTarget | null = null;
+  let activeSession: SshSessionState | null = null;
+  let lastSession: SshSessionState | null = null;
   let logPath: string | null = null;
   let sshConfig: SshConfig = loadSshConfig(localCwd);
 
   const getLogPath = () => logPath;
   const getTarget = () => activeTarget;
+  const getSession = () => activeSession;
+  const getSummarySession = (): SshSessionState | null => activeSession ?? lastSession;
   const reloadConfig = (cwd: string) => {
     sshConfig = loadSshConfig(cwd);
     return sshConfig;
   };
 
-  const disconnectTarget = (ctx: ExtensionContext, reason?: string): void => {
+  const closeActiveSession = (ctx: ExtensionContext, disconnectReason: string): SshSessionState | null => {
+    if (!activeSession) return null;
+    const endedSession: SshSessionState = {
+      ...activeSession,
+      endedAt: new Date().toISOString(),
+      disconnectReason,
+    };
+    lastSession = endedSession;
+    activeSession = null;
+    if (getLogPath()) {
+      logSshCall(
+        {
+          remote: endedSession.target.remote,
+          command: `disconnect ${disconnectReason}`,
+          type: "session-end",
+          cwd: ctx.cwd,
+          mode: "session",
+          environment: endedSession.target.environment,
+          profile: endedSession.target.profile,
+          source: endedSession.target.source,
+          decision: "executed",
+          reason: disconnectReason,
+        },
+        getLogPath()!,
+      );
+    }
+    return endedSession;
+  };
+
+  const disconnectTarget = async (ctx: ExtensionContext, reason?: string): Promise<void> => {
+    const endedSession = closeActiveSession(ctx, reason || "disconnect");
     activeTarget = null;
     clearTargetUi(ctx);
+
     if (ctx.hasUI && reason) {
       ctx.ui.notify(reason, "info");
+    }
+
+    if (endedSession) {
+      const summary = buildSessionSummary(endedSession, getLogPath());
+      if (summary && ctx.hasUI) {
+        await ctx.ui.editor("SSH Session Summary", summary.display);
+      } else if (summary) {
+        console.log(summary.display);
+      }
     }
   };
 
@@ -532,15 +641,131 @@ export default function sshExtension(pi: ExtensionAPI) {
     return target;
   };
 
+  const runPreflight = async (ctx: ExtensionContext, session: SshSessionState): Promise<SshHealthReport | null> => {
+    try {
+      const report = await runHealthCheck(session.target, ctx.cwd, getLogPath());
+      session.lastPreflight = report;
+      if (getLogPath()) {
+        logSshCall(
+          {
+            remote: session.target.remote,
+            command: `preflight ${report.status}`,
+            type: "preflight",
+            cwd: ctx.cwd,
+            mode: "command",
+            environment: session.target.environment,
+            profile: session.target.profile,
+            source: session.target.source,
+            decision: "executed",
+            reason: report.missingTools.length === 0 ? "All required remote tools available" : `Missing tools: ${report.missingTools.join(", ")}`,
+          },
+          getLogPath()!,
+        );
+      }
+      updateTargetUi(ctx, session.target, getLogPath(), session);
+      return report;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (getLogPath()) {
+        logSshCall(
+          {
+            remote: session.target.remote,
+            command: "preflight failed",
+            type: "preflight",
+            cwd: ctx.cwd,
+            mode: "command",
+            environment: session.target.environment,
+            profile: session.target.profile,
+            source: session.target.source,
+            decision: "blocked",
+            reason: message,
+          },
+          getLogPath()!,
+        );
+      }
+      updateTargetUi(ctx, session.target, getLogPath(), session);
+      ctx.hasUI ? ctx.ui.notify(`SSH preflight failed: ${message}`, "warning") : console.warn(`SSH preflight failed: ${message}`);
+      return null;
+    }
+  };
+
+  const buildSessionSummary = (session: SshSessionState, activeLogPath: string | null, format: SshSummaryFormat = "text") => {
+    if (!activeLogPath) return null;
+    const entries = filterSshLogEntries(readSshLogEntries(activeLogPath), {
+      remote: session.target.remote,
+      profile: session.target.profile,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt,
+    });
+    const summary = summarizeSshLogEntries(entries);
+    const header = [
+      `Target: ${formatTargetLabel(session.target)}`,
+      `Started: ${session.startedAt}`,
+      `Ended: ${session.endedAt || "(active)"}`,
+      `Duration: ${formatDuration(session.startedAt, session.endedAt)}`,
+      `Disconnect reason: ${session.disconnectReason || (session.endedAt ? "disconnect" : "(active)")}`,
+      `Preflight: ${session.lastPreflight ? (session.lastPreflight.missingTools.length === 0 ? "ok" : `warnings (${session.lastPreflight.missingTools.join(", ")})`) : "not run"}`,
+      "",
+    ].join("\n");
+    const rendered = formatSshLogSummary(summary, format === "json" ? "json" : format);
+    const payload = format === "json"
+      ? JSON.stringify({ session, summary, entries }, null, 2)
+      : `${header}${rendered}`;
+    return { display: payload, entries, summary };
+  };
+
+  const exportSessionSummary = (ctx: ExtensionContext, content: string, outputPath: string) => {
+    const absolutePath = path.isAbsolute(outputPath) ? outputPath : path.join(ctx.cwd, outputPath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, content, "utf8");
+    return absolutePath;
+  };
+
   const activateTarget = async (ctx: ExtensionContext, target: ResolvedSshTarget, commandForLog: string): Promise<boolean> => {
     const readyTarget = await ensureTargetReady(ctx, target, commandForLog);
     if (!readyTarget) return false;
+
+    if (activeSession) {
+      closeActiveSession(ctx, "replaced by new target");
+    }
+
     activeTarget = readyTarget;
-    updateTargetUi(ctx, readyTarget, getLogPath());
+    activeSession = {
+      target: { ...readyTarget },
+      startedAt: new Date().toISOString(),
+    };
+
+    if (getLogPath()) {
+      logSshCall(
+        {
+          remote: readyTarget.remote,
+          command: commandForLog,
+          type: "session-start",
+          cwd: ctx.cwd,
+          mode: "session",
+          environment: readyTarget.environment,
+          profile: readyTarget.profile,
+          source: readyTarget.source,
+          decision: "executed",
+        },
+        getLogPath()!,
+      );
+    }
+
+    updateTargetUi(ctx, readyTarget, getLogPath(), activeSession);
     if (ctx.hasUI) {
       ctx.ui.notify(`SSH mode: ${formatTargetLabel(readyTarget)}`, "info");
       ctx.ui.notify(`SSH log: ${path.relative(ctx.cwd, getLogPath() ?? "")}`, "info");
     }
+
+    const preflight = await runPreflight(ctx, activeSession);
+    if (preflight) {
+      const preflightMessage = preflight.missingTools.length === 0
+        ? "SSH preflight passed."
+        : `SSH preflight warnings: missing ${preflight.missingTools.join(", ")}. Run /ssh-health for details.`;
+      ctx.hasUI ? ctx.ui.notify(preflightMessage, preflight.missingTools.length === 0 ? "info" : "warning") : console.log(preflightMessage);
+    }
+
     return true;
   };
 
@@ -651,7 +876,7 @@ export default function sshExtension(pi: ExtensionAPI) {
         ctx.hasUI ? ctx.ui.notify("No active SSH target.", "info") : console.log("No active SSH target.");
         return;
       }
-      disconnectTarget(ctx, "SSH session disconnected.");
+      await disconnectTarget(ctx, "SSH session disconnected.");
     },
   });
 
@@ -668,6 +893,7 @@ export default function sshExtension(pi: ExtensionAPI) {
       const allowlistEnabled = sshConfig.allowlist.length > 0 ? "yes" : "no";
       const blockedCommands = policy.blockedCommands?.length ? policy.blockedCommands.join(", ") : "(none)";
       const logFilePath = getLogPath() ? path.relative(ctx.cwd, getLogPath()!) || getLogPath()! : ".pi/ssh/ssh.log";
+      const session = getSession();
       const message = [
         `Target: ${formatTargetLabel(target)}`,
         `Remote: ${target.remote}`,
@@ -679,6 +905,9 @@ export default function sshExtension(pi: ExtensionAPI) {
         `Confirm write operations: ${policy.confirmWriteOperations ? "yes" : "no"}`,
         `Confirm mutating bash commands: ${policy.confirmMutatingCommands ? "yes" : "no"}`,
         `Blocked commands: ${blockedCommands}`,
+        `Session started: ${session?.startedAt || "(unknown)"}`,
+        `Session duration: ${session ? formatDuration(session.startedAt, session.endedAt) : "(unknown)"}`,
+        `Preflight: ${session?.lastPreflight ? (session.lastPreflight.missingTools.length === 0 ? "ok" : `warnings (${session.lastPreflight.missingTools.join(", ")})`) : "not run"}`,
         `Log: ${logFilePath}`,
       ].join("\n");
       if (ctx.hasUI) {
@@ -706,27 +935,77 @@ export default function sshExtension(pi: ExtensionAPI) {
       if (!readyTarget) return;
 
       try {
-        const raw = await collectHealthDetails(readyTarget, ctx.cwd, getLogPath());
-        const { pwd, checks } = parseHealthDetails(raw);
-        const missing = checks.filter((check) => check.status !== "ok");
-        const lines = [
-          `Target: ${formatTargetLabel(readyTarget)}`,
-          `Connection: OK`,
-          `pwd: ${pwd}`,
-          "",
-          "Checks:",
-          ...checks.map((check) => `- ${check.name}: ${check.status}`),
-        ];
-        const message = lines.join("\n");
+        const report = await runHealthCheck(readyTarget, ctx.cwd, getLogPath());
+        if (activeSession && activeSession.target.remote === readyTarget.remote && activeSession.target.profile === readyTarget.profile) {
+          activeSession.lastPreflight = report;
+          updateTargetUi(ctx, activeSession.target, getLogPath(), activeSession);
+        }
+        const message = formatHealthReport(readyTarget, report);
         if (ctx.hasUI) {
           await ctx.ui.editor("SSH Health", message);
-          ctx.ui.notify(missing.length === 0 ? "SSH health check passed." : `SSH health check found ${missing.length} missing tools.`, missing.length === 0 ? "info" : "warning");
+          ctx.ui.notify(report.missingTools.length === 0 ? "SSH health check passed." : `SSH health check found ${report.missingTools.length} missing tools.`, report.missingTools.length === 0 ? "info" : "warning");
         } else {
           console.log(message);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.hasUI ? ctx.ui.notify(`SSH health failed: ${message}`, "error") : console.error(message);
+      }
+    },
+  });
+
+  pi.registerCommand("ssh-summary", {
+    description: "Show or export a summary of the current or most recent SSH session",
+    handler: async (args, ctx) => {
+      logPath = ensureLogPath(ctx.cwd, logPath);
+      const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
+      let format: SshSummaryFormat = "text";
+      let outputPath: string | undefined;
+      let useLastSession = false;
+
+      for (let index = 0; index < tokens.length; index++) {
+        const token = tokens[index];
+        if (token === "--format" && tokens[index + 1]) {
+          const value = tokens[index + 1] as SshSummaryFormat;
+          if (["text", "markdown", "json"].includes(value)) {
+            format = value;
+            index += 1;
+          }
+          continue;
+        }
+        if (token === "--output" && tokens[index + 1]) {
+          outputPath = tokens[index + 1];
+          index += 1;
+          continue;
+        }
+        if (token === "--last") {
+          useLastSession = true;
+        }
+      }
+
+      const session = useLastSession ? lastSession : getSummarySession();
+      if (!session) {
+        const message = "No SSH session summary is available yet.";
+        ctx.hasUI ? ctx.ui.notify(message, "info") : console.log(message);
+        return;
+      }
+
+      const summary = buildSessionSummary(session, getLogPath(), format);
+      if (!summary) {
+        const message = "SSH log is not available yet.";
+        ctx.hasUI ? ctx.ui.notify(message, "warning") : console.log(message);
+        return;
+      }
+
+      if (outputPath) {
+        const absolutePath = exportSessionSummary(ctx, summary.display, outputPath);
+        ctx.hasUI ? ctx.ui.notify(`SSH summary exported to ${absolutePath}`, "info") : console.log(`SSH summary exported to ${absolutePath}`);
+      }
+
+      if (ctx.hasUI) {
+        await ctx.ui.editor("SSH Session Summary", summary.display);
+      } else {
+        console.log(summary.display);
       }
     },
   });
@@ -942,7 +1221,7 @@ export default function sshExtension(pi: ExtensionAPI) {
     logPath = ensureLogPath(ctx.cwd, logPath);
     const arg = pi.getFlag("ssh") as string | undefined;
     if (!arg) {
-      updateTargetUi(ctx, getTarget(), getLogPath());
+      updateTargetUi(ctx, getTarget(), getLogPath(), getSession());
       return;
     }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- Adds automatic SSH preflight checks on connect and `--ssh` session start
+- Adds `/ssh-summary` with text, markdown, and JSON output modes
+- Adds summary export to local files via `--output`
+- Shows an SSH session summary automatically on disconnect
+- Extends the active SSH widget with preflight status
+- Adds log summary helper coverage in tests
+- Refreshes README for preflight and session-summary workflows
+
 ## 0.1.1
 
 - Adds `/ssh-connect` for interactive target selection

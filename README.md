@@ -61,6 +61,7 @@ When `--ssh` is active:
 - `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` operate on the remote machine
 - user `!commands` also execute remotely
 - the status bar shows the active remote target
+- connect runs an automatic preflight check and surfaces missing remote tools early
 - the system prompt reflects the remote cwd and environment
 
 ### 2. `/ssh-run`
@@ -72,7 +73,23 @@ Run a one-off remote command without switching the whole session:
 /ssh-run prod-app docker ps
 ```
 
-### 3. Audit logging
+### 3. Automatic preflight + manual health checks
+
+On `/ssh-connect` and `--ssh`, the extension runs a lightweight preflight check automatically.
+
+That verifies:
+- connectivity
+- resolved remote `pwd`
+- expected remote tools such as `bash`, `cat`, `mkdir`, `base64`, `file`, `rg`, and `fd`
+
+You can also run the same verification on demand with:
+
+```text
+/ssh-health
+/ssh-health prod-app
+```
+
+### 4. Audit logging
 
 SSH activity is logged locally to:
 
@@ -88,7 +105,7 @@ Each line is structured JSON and can include metadata such as:
 - decision (`executed`, `blocked`, `confirmed`, `denied`)
 - reason
 
-### 4. Profiles, allowlist, and guardrails
+### 5. Profiles, allowlist, and guardrails
 
 The package supports project-local and global SSH config files:
 - project: `<project>/.pi/ssh/config.json`
@@ -113,7 +130,7 @@ pi install git:github.com/vindulaintranet/pi-extension-ssh
 ### Pin to a release tag
 
 ```bash
-pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.1
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.2
 ```
 
 ### From a local path
@@ -155,6 +172,7 @@ pi -e ./ssh.ts --ssh user@host:/srv/app
 ```text
 /ssh-context
 /ssh-health
+/ssh-summary
 /ssh-disconnect
 ```
 
@@ -210,10 +228,19 @@ List configured targets with:
 
 - `/ssh-connect` — choose a configured target interactively or pass one explicitly
 - `/ssh-disconnect` — leave the active SSH session target
-- `/ssh-context` — inspect the active target, policies, and log path
-- `/ssh-health [target]` — verify connectivity and required remote tools
+- `/ssh-context` — inspect the active target, policies, preflight status, and log path
+- `/ssh-health [target]` — verify connectivity and required remote tools on demand
+- `/ssh-summary [--format text|markdown|json] [--output <path>] [--last]` — review or export the current/recent SSH session summary
 - `/ssh-targets` — list configured profiles
 - `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
+
+Example summary exports:
+
+```text
+/ssh-summary
+/ssh-summary --format markdown --output .pi/ssh/reports/latest.md
+/ssh-summary --format json --output .pi/ssh/reports/latest.json --last
+```
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "@vindulaintranet/pi-extension-ssh",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi package for remote operations over SSH with session mode, command mode, and local audit logging",
   "author": "Fabio Rizzo Matos <fabiorizzo@vindula.com.br> (https://github.com/fabiorizzomatos)",
   "license": "MIT",
