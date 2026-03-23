@@ -1,0 +1,38 @@
+{
+  "allowlist": ["dev-app", "staging-app", "prod-app"],
+  "targets": {
+    "dev-app": {
+      "remote": "ops@dev-host",
+      "cwd": "/srv/app",
+      "environment": "dev",
+      "aliases": ["development"]
+    },
+    "staging-app": {
+      "remote": "ops@staging-host",
+      "cwd": "/srv/app",
+      "environment": "staging",
+      "aliases": ["stage"]
+    },
+    "prod-app": {
+      "remote": "ops@prod-host",
+      "cwd": "/srv/app",
+      "environment": "prod",
+      "requiresConfirmation": true,
+      "aliases": ["production", "live"]
+    }
+  },
+  "environmentPolicies": {
+    "prod": {
+      "requiresConfirmation": true,
+      "confirmWriteOperations": true,
+      "confirmMutatingCommands": true,
+      "blockedCommands": [
+        "rm -rf",
+        "git reset --hard",
+        "terraform destroy",
+        "shutdown",
+        "reboot"
+      ]
+    }
+  }
+}

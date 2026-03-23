@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Adds packaged `examples/` config templates for dev/staging/prod, bastion, and customer-environment setups
+- Adds `/ssh-summary --raw` for raw filtered JSONL export
+- Adds `/ssh-summary --include-entries` for fuller text/markdown reports
+- Refreshes README to distinguish inline docs from copy-paste-ready example configs
+
 ## 0.1.2
 
 - Adds automatic SSH preflight checks on connect and `--ssh` session start

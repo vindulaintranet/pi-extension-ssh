@@ -1,0 +1,58 @@
+{
+  "allowlist": [
+    "customer-a-prod",
+    "customer-a-staging",
+    "customer-b-prod",
+    "customer-b-staging",
+    "shared-support"
+  ],
+  "targets": {
+    "customer-a-prod": {
+      "remote": "support@customer-a-prod.example.com",
+      "cwd": "/srv/customer-a/app",
+      "environment": "prod",
+      "requiresConfirmation": true,
+      "aliases": ["cust-a-prod"]
+    },
+    "customer-a-staging": {
+      "remote": "support@customer-a-staging.example.com",
+      "cwd": "/srv/customer-a/app",
+      "environment": "staging",
+      "aliases": ["cust-a-stage"]
+    },
+    "customer-b-prod": {
+      "remote": "support@customer-b-prod.example.com",
+      "cwd": "/srv/customer-b/app",
+      "environment": "prod",
+      "requiresConfirmation": true,
+      "aliases": ["cust-b-prod"]
+    },
+    "customer-b-staging": {
+      "remote": "support@customer-b-staging.example.com",
+      "cwd": "/srv/customer-b/app",
+      "environment": "staging",
+      "aliases": ["cust-b-stage"]
+    },
+    "shared-support": {
+      "remote": "support@shared-tools.example.com",
+      "cwd": "/srv/support",
+      "environment": "default",
+      "aliases": ["support-tools"]
+    }
+  },
+  "environmentPolicies": {
+    "prod": {
+      "requiresConfirmation": true,
+      "confirmWriteOperations": true,
+      "confirmMutatingCommands": true,
+      "blockedCommands": [
+        "rm -rf",
+        "git reset --hard",
+        "terraform destroy",
+        "systemctl stop",
+        "shutdown",
+        "reboot"
+      ]
+    }
+  }
+}

@@ -130,7 +130,7 @@ pi install git:github.com/vindulaintranet/pi-extension-ssh
 ### Pin to a release tag
 
 ```bash
-pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.2
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.3
 ```
 
 ### From a local path
@@ -230,7 +230,7 @@ List configured targets with:
 - `/ssh-disconnect` — leave the active SSH session target
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path
 - `/ssh-health [target]` — verify connectivity and required remote tools on demand
-- `/ssh-summary [--format text|markdown|json] [--output <path>] [--last]` — review or export the current/recent SSH session summary
+- `/ssh-summary [--format text|markdown|json|raw] [--output <path>] [--last] [--include-entries] [--raw]` — review or export the current/recent SSH session summary
 - `/ssh-targets` — list configured profiles
 - `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
 
@@ -238,8 +238,9 @@ Example summary exports:
 
 ```text
 /ssh-summary
-/ssh-summary --format markdown --output .pi/ssh/reports/latest.md
+/ssh-summary --format markdown --include-entries --output .pi/ssh/reports/latest.md
 /ssh-summary --format json --output .pi/ssh/reports/latest.json --last
+/ssh-summary --raw --output .pi/ssh/reports/latest.jsonl --last
 ```
 
 ---
@@ -261,6 +262,13 @@ Use target profiles per customer/tenant/region and maintain a local audit trail 
 ---
 
 ## Example config
+
+This inline example is a compact illustration.
+
+If you want copy-paste-ready templates for common setups, use the files in [`examples/`](./examples):
+- [`examples/dev-staging-prod.config.json`](./examples/dev-staging-prod.config.json)
+- [`examples/bastion-jumpbox.config.json`](./examples/bastion-jumpbox.config.json)
+- [`examples/customer-environments.config.json`](./examples/customer-environments.config.json)
 
 ```json
 {
@@ -336,6 +344,7 @@ This package already includes the agreed enterprise track features:
 - remote `grep` currently expects `rg` on the remote host
 - target handling is config-driven; this version does not yet include a full interactive connection manager
 - logs are structured JSONL locally, but no external export sink is included yet
+- historical summaries are session-scoped; this version does not provide arbitrary cross-session analytics
 
 ---
 

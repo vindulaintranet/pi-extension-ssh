@@ -122,7 +122,7 @@ type SshSessionState = {
   lastPreflight?: SshHealthReport;
 };
 
-type SshSummaryFormat = "text" | "markdown" | "json";
+type SshSummaryFormat = "text" | "markdown" | "json" | "raw";
 
 function formatPreflightState(report: SshHealthReport | undefined): string {
   if (!report) return "Preflight: pending";
@@ -689,7 +689,12 @@ export default function sshExtension(pi: ExtensionAPI) {
     }
   };
 
-  const buildSessionSummary = (session: SshSessionState, activeLogPath: string | null, format: SshSummaryFormat = "text") => {
+  const buildSessionSummary = (
+    session: SshSessionState,
+    activeLogPath: string | null,
+    format: SshSummaryFormat = "text",
+    includeEntries = false,
+  ) => {
     if (!activeLogPath) return null;
     const entries = filterSshLogEntries(readSshLogEntries(activeLogPath), {
       remote: session.target.remote,
@@ -698,19 +703,43 @@ export default function sshExtension(pi: ExtensionAPI) {
       endedAt: session.endedAt,
     });
     const summary = summarizeSshLogEntries(entries);
-    const header = [
+    const headerLines = [
       `Target: ${formatTargetLabel(session.target)}`,
       `Started: ${session.startedAt}`,
       `Ended: ${session.endedAt || "(active)"}`,
       `Duration: ${formatDuration(session.startedAt, session.endedAt)}`,
       `Disconnect reason: ${session.disconnectReason || (session.endedAt ? "disconnect" : "(active)")}`,
       `Preflight: ${session.lastPreflight ? (session.lastPreflight.missingTools.length === 0 ? "ok" : `warnings (${session.lastPreflight.missingTools.join(", ")})`) : "not run"}`,
-      "",
-    ].join("\n");
-    const rendered = formatSshLogSummary(summary, format === "json" ? "json" : format);
-    const payload = format === "json"
-      ? JSON.stringify({ session, summary, entries }, null, 2)
-      : `${header}${rendered}`;
+    ];
+
+    const detailedEntriesText = entries.length === 0
+      ? "(no entries)"
+      : entries
+          .map((entry) => {
+            const reason = entry.reason ? ` (${entry.reason})` : "";
+            return `${entry.timestamp} · ${entry.type} · ${entry.decision || "n/a"} · ${entry.command}${reason}`;
+          })
+          .join("\n");
+
+    let payload: string;
+    if (format === "raw") {
+      payload = entries.length === 0 ? "" : entries.map((entry) => JSON.stringify(entry)).join("\n");
+    } else if (format === "json") {
+      payload = JSON.stringify({ session, summary, entries }, null, 2);
+    } else if (format === "markdown") {
+      const rendered = formatSshLogSummary(summary, "markdown");
+      const header = ["# SSH Session Report", "", ...headerLines.map((line) => `- ${line}`), ""].join("\n");
+      const details = includeEntries
+        ? `\n\n## Filtered entries\n${entries.length === 0 ? "\n- (no entries)" : `\n${entries.map((entry) => `- ${entry.timestamp} · ${entry.type} · ${entry.decision || "n/a"} · ${entry.command}${entry.reason ? ` (${entry.reason})` : ""}`).join("\n")}`}`
+        : "";
+      payload = `${header}${rendered}${details}`;
+    } else {
+      const rendered = formatSshLogSummary(summary, "text");
+      const header = `${headerLines.join("\n")}\n\n`;
+      const details = includeEntries ? `\n\nFiltered entries:\n${detailedEntriesText}` : "";
+      payload = `${header}${rendered}${details}`;
+    }
+
     return { display: payload, entries, summary };
   };
 
@@ -955,19 +984,20 @@ export default function sshExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("ssh-summary", {
-    description: "Show or export a summary of the current or most recent SSH session",
+    description: "Show or export a summary or raw entry slice of the current or most recent SSH session",
     handler: async (args, ctx) => {
       logPath = ensureLogPath(ctx.cwd, logPath);
       const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
       let format: SshSummaryFormat = "text";
       let outputPath: string | undefined;
       let useLastSession = false;
+      let includeEntries = false;
 
       for (let index = 0; index < tokens.length; index++) {
         const token = tokens[index];
         if (token === "--format" && tokens[index + 1]) {
           const value = tokens[index + 1] as SshSummaryFormat;
-          if (["text", "markdown", "json"].includes(value)) {
+          if (["text", "markdown", "json", "raw"].includes(value)) {
             format = value;
             index += 1;
           }
@@ -980,6 +1010,14 @@ export default function sshExtension(pi: ExtensionAPI) {
         }
         if (token === "--last") {
           useLastSession = true;
+          continue;
+        }
+        if (token === "--raw") {
+          format = "raw";
+          continue;
+        }
+        if (token === "--include-entries") {
+          includeEntries = true;
         }
       }
 
@@ -990,7 +1028,7 @@ export default function sshExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const summary = buildSessionSummary(session, getLogPath(), format);
+      const summary = buildSessionSummary(session, getLogPath(), format, includeEntries);
       if (!summary) {
         const message = "SSH log is not available yet.";
         ctx.hasUI ? ctx.ui.notify(message, "warning") : console.log(message);
@@ -1003,9 +1041,9 @@ export default function sshExtension(pi: ExtensionAPI) {
       }
 
       if (ctx.hasUI) {
-        await ctx.ui.editor("SSH Session Summary", summary.display);
+        await ctx.ui.editor(format === "raw" ? "SSH Session Raw Entries" : "SSH Session Summary", summary.display || "(no entries)");
       } else {
-        console.log(summary.display);
+        console.log(summary.display || "(no entries)");
       }
     },
   });

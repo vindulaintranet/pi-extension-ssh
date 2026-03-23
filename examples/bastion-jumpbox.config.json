@@ -1,0 +1,34 @@
+{
+  "allowlist": ["bastion-eu", "bastion-us", "ops-tooling"],
+  "targets": {
+    "bastion-eu": {
+      "remote": "admin@bastion-eu.example.com",
+      "cwd": "/home/admin",
+      "environment": "default",
+      "aliases": ["eu-bastion"]
+    },
+    "bastion-us": {
+      "remote": "admin@bastion-us.example.com",
+      "cwd": "/home/admin",
+      "environment": "default",
+      "aliases": ["us-bastion"]
+    },
+    "ops-tooling": {
+      "remote": "ops@ops-tools.internal",
+      "cwd": "/srv/ops",
+      "environment": "staging",
+      "aliases": ["tooling"]
+    }
+  },
+  "environmentPolicies": {
+    "default": {
+      "confirmMutatingCommands": true,
+      "blockedCommands": [
+        "rm -rf /",
+        "mkfs",
+        "shutdown",
+        "reboot"
+      ]
+    }
+  }
+}
