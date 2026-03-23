@@ -130,7 +130,7 @@ pi install git:github.com/vindulaintranet/pi-extension-ssh
 ### Pin to a release tag
 
 ```bash
-pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.3
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.4
 ```
 
 ### From a local path
@@ -166,6 +166,8 @@ pi -e ./ssh.ts --ssh user@host:/srv/app
 ```text
 /ssh-connect
 ```
+
+If no targets exist yet, the extension can now open a TUI wizard and create `.pi/ssh/config.json` for you.
 
 ### SSH operations context
 
@@ -224,9 +226,16 @@ List configured targets with:
 /ssh-targets
 ```
 
+Create a project-local SSH config through the TUI:
+
+```text
+/ssh-configure
+```
+
 ## Operational commands
 
-- `/ssh-connect` — choose a configured target interactively or pass one explicitly
+- `/ssh-configure` — create `.pi/ssh/config.json` through a TUI wizard
+- `/ssh-connect` — choose a configured target interactively or pass one explicitly; offers config creation when none exist
 - `/ssh-disconnect` — leave the active SSH session target
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path
 - `/ssh-health [target]` — verify connectivity and required remote tools on demand
@@ -342,7 +351,7 @@ This package already includes the agreed enterprise track features:
 
 - remote `find` currently expects `fd` on the remote host
 - remote `grep` currently expects `rg` on the remote host
-- target handling is config-driven; this version does not yet include a full interactive connection manager
+- target handling is config-driven; this version now includes a TUI setup wizard, but not a full interactive multi-target connection manager
 - logs are structured JSONL locally, but no external export sink is included yet
 - historical summaries are session-scoped; this version does not provide arbitrary cross-session analytics
 

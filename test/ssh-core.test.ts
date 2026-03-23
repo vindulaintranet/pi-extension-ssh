@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildRemoteCommand,
+  createStarterSshConfig,
   ensureLogPath,
   filterSshLogEntries,
   formatSshLogSummary,
@@ -239,6 +240,25 @@ test("listConfiguredTargets returns sorted targets", () => {
 
   const names = listConfiguredTargets(config).map((target) => target.name);
   assert.deepEqual(names, ["alpha", "zebra"]);
+});
+
+test("createStarterSshConfig builds a prod-safe starter config", () => {
+  const text = createStarterSshConfig({
+    targetName: "prod-app",
+    remote: "ops@prod-host",
+    cwd: "/srv/app",
+    environment: "prod",
+    aliases: ["production", " live "],
+  });
+  const parsed = JSON.parse(text);
+
+  assert.deepEqual(parsed.allowlist, ["prod-app"]);
+  assert.equal(parsed.targets["prod-app"].remote, "ops@prod-host");
+  assert.equal(parsed.targets["prod-app"].cwd, "/srv/app");
+  assert.equal(parsed.targets["prod-app"].requiresConfirmation, true);
+  assert.deepEqual(parsed.targets["prod-app"].aliases, ["production", "live"]);
+  assert.equal(parsed.environmentPolicies.prod.confirmWriteOperations, true);
+  assert.match(text, /"blockedCommands"/);
 });
 
 test("read/filter/summarize SSH logs support session export flows", async () => {

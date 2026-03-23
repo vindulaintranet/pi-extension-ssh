@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Adds `/ssh-configure` to create `.pi/ssh/config.json` through a TUI wizard
+- Makes `/ssh-connect` and `/ssh-targets` offer guided config creation when no targets exist
+- Adds starter config generation helper coverage in tests
+- Refreshes README for TUI-first SSH setup
+
 ## 0.1.3
 
 - Adds packaged `examples/` config templates for dev/staging/prod, bastion, and customer-environment setups

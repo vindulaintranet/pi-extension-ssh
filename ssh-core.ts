@@ -80,6 +80,14 @@ export interface ResolvedSshTarget {
   source: "profile" | "raw";
 }
 
+export interface SshConfigTemplateInput {
+  targetName: string;
+  remote: string;
+  cwd?: string;
+  environment: "default" | "dev" | "staging" | "prod";
+  aliases?: string[];
+}
+
 export const OUTPUT_MAX_LINES = 2000;
 export const OUTPUT_MAX_BYTES = 50 * 1024;
 export const SSH_PROMPT_HINT =
@@ -505,6 +513,35 @@ export function parseSshInvocation(command: string): { remote: string; command: 
 export function buildRemoteCommand(remoteCwd: string | undefined, command: string): string {
   if (!remoteCwd) return command;
   return `cd ${JSON.stringify(remoteCwd)} && ${command}`;
+}
+
+export function createStarterSshConfig(input: SshConfigTemplateInput): string {
+  const aliases = (input.aliases ?? []).map((alias) => alias.trim()).filter(Boolean);
+  const config: Record<string, unknown> = {
+    allowlist: [input.targetName],
+    targets: {
+      [input.targetName]: {
+        remote: input.remote,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        environment: input.environment,
+        ...(input.environment === "prod" ? { requiresConfirmation: true } : {}),
+        ...(aliases.length > 0 ? { aliases } : {}),
+      },
+    },
+  };
+
+  if (input.environment === "prod") {
+    config.environmentPolicies = {
+      prod: {
+        requiresConfirmation: true,
+        confirmWriteOperations: true,
+        confirmMutatingCommands: true,
+        blockedCommands: [...DEFAULT_PROD_BLOCKED_COMMANDS],
+      },
+    };
+  }
+
+  return `${JSON.stringify(config, null, 2)}\n`;
 }
 
 export function readSshLogEntries(logFilePath: string): SshLogEntry[] {

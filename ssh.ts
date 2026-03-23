@@ -20,6 +20,7 @@ import {
 import {
   SSH_PROMPT_HINT,
   buildRemoteCommand,
+  createStarterSshConfig,
   ensureLogPath,
   filterSshLogEntries,
   formatSshLogSummary,
@@ -150,6 +151,10 @@ function formatDuration(startedAt: string, endedAt?: string): string {
   if (!Number.isFinite(start) || !Number.isFinite(end)) return "(unknown)";
   const seconds = Math.max(0, Math.round((end - start) / 1000));
   return `${seconds}s`;
+}
+
+function getProjectSshConfigPath(cwd: string): string {
+  return path.join(cwd, ".pi", "ssh", "config.json");
 }
 
 function clearTargetUi(ctx: ExtensionContext): void {
@@ -537,6 +542,69 @@ export default function sshExtension(pi: ExtensionAPI) {
     return sshConfig;
   };
 
+  const ensureSshConfigViaTui = async (ctx: ExtensionContext): Promise<string | null> => {
+    if (!ctx.hasUI) {
+      console.log("No SSH targets configured. Create .pi/ssh/config.json first.");
+      return null;
+    }
+
+    const createNow = await ctx.ui.confirm(
+      "No SSH targets configured",
+      "No SSH targets configured. Create .pi/ssh/config.json now using the TUI wizard?",
+    );
+    if (!createNow) return null;
+
+    const targetName = (await ctx.ui.input("SSH target profile name", "prod-app"))?.trim();
+    if (!targetName) return null;
+
+    const remote = (await ctx.ui.input("SSH remote (user@host)", "ops@prod-host"))?.trim();
+    if (!remote) return null;
+
+    const remoteCwd = (await ctx.ui.input("Remote working directory", "/srv/app"))?.trim();
+    const environment = await ctx.ui.select("SSH environment", ["default", "dev", "staging", "prod"]);
+    if (!environment) return null;
+
+    const aliasesInput = (await ctx.ui.input("Aliases (optional, comma-separated)", environment === "prod" ? "production, live" : ""))?.trim() || "";
+    const aliases = aliasesInput
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    const configPath = getProjectSshConfigPath(ctx.cwd);
+    if (fs.existsSync(configPath)) {
+      const overwrite = await ctx.ui.confirm(
+        "Project SSH config already exists",
+        `A project SSH config already exists at ${path.relative(ctx.cwd, configPath) || configPath}. Overwrite it with the reviewed wizard draft?`,
+      );
+      if (!overwrite) return null;
+    }
+
+    let draft = createStarterSshConfig({
+      targetName,
+      remote,
+      cwd: remoteCwd || undefined,
+      environment: environment as "default" | "dev" | "staging" | "prod",
+      aliases,
+    });
+
+    while (true) {
+      const edited = await ctx.ui.editor("Review SSH config", draft);
+      if (edited === undefined) return null;
+      try {
+        JSON.parse(edited);
+        fs.mkdirSync(path.dirname(configPath), { recursive: true });
+        fs.writeFileSync(configPath, edited.endsWith("\n") ? edited : `${edited}\n`, "utf8");
+        reloadConfig(ctx.cwd);
+        ctx.ui.notify(`Created ${path.relative(ctx.cwd, configPath) || configPath}`, "info");
+        return targetName;
+      } catch (error) {
+        draft = edited;
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Invalid JSON: ${message}`, "error");
+      }
+    }
+  };
+
   const closeActiveSession = (ctx: ExtensionContext, disconnectReason: string): SshSessionState | null => {
     if (!activeSession) return null;
     const endedSession: SshSessionState = {
@@ -844,14 +912,37 @@ export default function sshExtension(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("ssh-configure", {
+    description: "Create a project-local .pi/ssh/config.json via TUI",
+    handler: async (_args, ctx) => {
+      const targetName = await ensureSshConfigViaTui(ctx);
+      if (!targetName) return;
+      const target = resolveSshTarget(targetName, sshConfig);
+      if (!target) {
+        ctx.hasUI ? ctx.ui.notify("SSH config was saved, but the new target could not be resolved.", "warning") : console.warn("SSH config was saved, but the new target could not be resolved.");
+        return;
+      }
+      const targets = listConfiguredTargets(sshConfig).map((configured) => `- ${formatTargetChoice(configured, configured.name === target.profile)}`);
+      const message = [`Created target: ${formatTargetLabel(target)}`, "", "Configured targets:", ...targets].join("\n");
+      if (ctx.hasUI) {
+        await ctx.ui.editor("SSH Config Created", message);
+      } else {
+        console.log(message);
+      }
+    },
+  });
+
   pi.registerCommand("ssh-targets", {
     description: "List configured SSH target profiles",
     handler: async (_args, ctx) => {
       reloadConfig(ctx.cwd);
-      const targets = listConfiguredTargets(sshConfig);
+      let targets = listConfiguredTargets(sshConfig);
       if (targets.length === 0) {
         ctx.hasUI ? ctx.ui.notify("No SSH target profiles configured.", "info") : console.log("No SSH target profiles configured.");
-        return;
+        const targetName = await ensureSshConfigViaTui(ctx);
+        if (!targetName) return;
+        targets = listConfiguredTargets(sshConfig);
+        if (targets.length === 0) return;
       }
       const activeProfile = getTarget()?.profile;
       const lines = targets.map((target) => `- ${formatTargetChoice(target, target.name === activeProfile)}`);
@@ -872,20 +963,25 @@ export default function sshExtension(pi: ExtensionAPI) {
 
       let reference = String(args || "").trim();
       if (!reference) {
-        const targets = listConfiguredTargets(sshConfig);
+        let targets = listConfiguredTargets(sshConfig);
         if (targets.length === 0) {
           ctx.hasUI ? ctx.ui.notify("No SSH targets configured. Create .pi/ssh/config.json first.", "warning") : console.log("No SSH targets configured. Create .pi/ssh/config.json first.");
-          return;
+          const createdTarget = await ensureSshConfigViaTui(ctx);
+          if (!createdTarget) return;
+          targets = listConfiguredTargets(sshConfig);
+          reference = createdTarget;
         }
-        if (!ctx.hasUI) {
-          console.log("Usage: /ssh-connect <target>");
-          return;
+        if (!reference) {
+          if (!ctx.hasUI) {
+            console.log("Usage: /ssh-connect <target>");
+            return;
+          }
+          const items = targets.map((target) => formatTargetChoice(target, target.name === getTarget()?.profile));
+          const selected = await ctx.ui.select("Select SSH target", items);
+          if (!selected) return;
+          const selectedTarget = targets[items.indexOf(selected)];
+          reference = selectedTarget?.name || "";
         }
-        const items = targets.map((target) => formatTargetChoice(target, target.name === getTarget()?.profile));
-        const selected = await ctx.ui.select("Select SSH target", items);
-        if (!selected) return;
-        const selectedTarget = targets[items.indexOf(selected)];
-        reference = selectedTarget?.name || "";
       }
 
       const target = resolveSshTarget(reference, sshConfig);
