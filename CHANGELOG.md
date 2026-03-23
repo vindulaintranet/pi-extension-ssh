@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.7
+
 - Adds SSH runbook discovery from project-local and global runbook directories
 - Adds Markdown/frontmatter runbook support while keeping JSON runbooks supported
 - Adds `/ssh-runbooks` filtering/search for larger runbook catalogs, including runbook content and metadata
