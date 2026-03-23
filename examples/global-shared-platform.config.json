@@ -1,0 +1,39 @@
+{
+  "allowlist": ["bastion-eu", "bastion-us", "platform-staging", "shared-support"],
+  "targets": {
+    "bastion-eu": {
+      "remote": "admin@bastion-eu.example.com",
+      "cwd": "/home/admin",
+      "environment": "default",
+      "aliases": ["eu-bastion"]
+    },
+    "bastion-us": {
+      "remote": "admin@bastion-us.example.com",
+      "cwd": "/home/admin",
+      "environment": "default",
+      "aliases": ["us-bastion"]
+    },
+    "platform-staging": {
+      "remote": "ops@platform-staging.example.com",
+      "cwd": "/srv/platform",
+      "environment": "staging",
+      "aliases": ["platform-stage"]
+    },
+    "shared-support": {
+      "remote": "support@shared-tools.example.com",
+      "cwd": "/srv/support",
+      "environment": "default"
+    }
+  },
+  "environmentPolicies": {
+    "default": {
+      "confirmMutatingCommands": true,
+      "blockedCommands": [
+        "rm -rf /",
+        "mkfs",
+        "shutdown",
+        "reboot"
+      ]
+    }
+  }
+}

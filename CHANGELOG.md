@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.5
 
-- Adds `/ssh-manage` for TUI-based add/edit/remove/review/connect workflows on project-local SSH targets
-- Keeps `.pi/ssh/config.json` as the source of truth while reducing manual JSON editing for day-to-day target management
+- Extends `/ssh-manage` with local/global target visibility, shadowed-target markers, and global-to-local import
+- Updates `/ssh-targets` and `/ssh-connect` to surface target source more clearly
+- Adds enterprise-oriented example configs for shared global targets and project-local overrides
+- Refreshes README and examples documentation around the local/global enterprise workflow
 
 ## 0.1.4
 

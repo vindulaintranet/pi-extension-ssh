@@ -116,6 +116,15 @@ This lets you:
 - restrict where Pi is allowed to connect
 - require confirmation for protected targets
 - block dangerous commands in certain environments
+- keep shared global targets read-only while still importing them into a project when local overrides are needed
+
+### 6. TUI target management
+
+The extension now includes a TUI-first target manager:
+- create local config with `/ssh-configure`
+- manage local targets with `/ssh-manage`
+- view both project-local and global targets in one place
+- import global targets into project-local config for safe per-project overrides
 
 ---
 
@@ -130,7 +139,7 @@ pi install git:github.com/vindulaintranet/pi-extension-ssh
 ### Pin to a release tag
 
 ```bash
-pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.4
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.5
 ```
 
 ### From a local path
@@ -240,16 +249,20 @@ Manage project-local SSH targets through the TUI:
 /ssh-manage
 ```
 
+The manager shows both:
+- project-local targets you can edit here
+- global targets that are read-only here, but importable into the project
+
 ## Operational commands
 
 - `/ssh-configure` — create `.pi/ssh/config.json` through a TUI wizard
-- `/ssh-manage` — add, edit, remove, review, and connect project-local SSH targets from the TUI
+- `/ssh-manage` — add, edit, remove, review, connect, and import global targets into project-local config from the TUI
 - `/ssh-connect` — choose a configured target interactively or pass one explicitly; offers config creation when none exist
 - `/ssh-disconnect` — leave the active SSH session target
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path
 - `/ssh-health [target]` — verify connectivity and required remote tools on demand
 - `/ssh-summary [--format text|markdown|json|raw] [--output <path>] [--last] [--include-entries] [--raw]` — review or export the current/recent SSH session summary
-- `/ssh-targets` — list configured profiles
+- `/ssh-targets` — list project-local and global profiles with source markers
 - `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
 
 Example summary exports:
@@ -287,6 +300,8 @@ If you want copy-paste-ready templates for common setups, use the files in [`exa
 - [`examples/dev-staging-prod.config.json`](./examples/dev-staging-prod.config.json)
 - [`examples/bastion-jumpbox.config.json`](./examples/bastion-jumpbox.config.json)
 - [`examples/customer-environments.config.json`](./examples/customer-environments.config.json)
+- [`examples/global-shared-platform.config.json`](./examples/global-shared-platform.config.json)
+- [`examples/project-local-overrides.config.json`](./examples/project-local-overrides.config.json)
 
 ```json
 {
@@ -329,6 +344,20 @@ If you want copy-paste-ready templates for common setups, use the files in [`exa
 
 ---
 
+## Enterprise local/global pattern
+
+A practical enterprise setup is:
+- keep shared targets such as bastions, platform hosts, and approved base profiles in the global config
+- keep project-specific names, cwd values, aliases, and overrides in the local project config
+- use `/ssh-manage` to view both layers and import a global target into the project when you need a local override
+
+That gives you:
+- shared platform defaults
+- safer per-project customization
+- clearer ownership of what is centrally managed vs locally editable
+
+---
+
 ## Enterprise-oriented features included
 
 This package already includes the agreed enterprise track features:
@@ -360,7 +389,8 @@ This package already includes the agreed enterprise track features:
 
 - remote `find` currently expects `fd` on the remote host
 - remote `grep` currently expects `rg` on the remote host
-- target handling is config-driven; this version now includes a TUI setup wizard, but not a full interactive multi-target connection manager
+- target handling is config-driven; this version includes TUI setup and target management, but still keeps JSON as the source of truth
+- the TUI manager edits only project-local config; global targets are visible and importable, but remain read-only there
 - logs are structured JSONL locally, but no external export sink is included yet
 - historical summaries are session-scoped; this version does not provide arbitrary cross-session analytics
 

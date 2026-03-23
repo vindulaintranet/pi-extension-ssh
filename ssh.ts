@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
@@ -86,6 +87,83 @@ function formatTargetChoice(target: { name: string; remote: string; cwd?: string
   return `${target.name} -> ${target.remote}${cwd}${env}${suffix}`;
 }
 
+function formatManagedTargetChoice(target: ManagedTargetView, active: boolean): string {
+  const base = formatTargetChoice(target, active);
+  const origin = target.origin === "local" ? " [LOCAL]" : " [GLOBAL]";
+  const shadowed = target.shadowed ? " [SHADOWED]" : "";
+  return `${base}${origin}${shadowed}`;
+}
+
+function buildManagedTargets(config: SshConfig, origin: ManagerTargetOrigin, localNames = new Set<string>()): ManagedTargetView[] {
+  return listConfiguredTargets(config).map((target) => ({
+    ...target,
+    origin,
+    shadowed: origin === "global" ? localNames.has(target.name) : false,
+  }));
+}
+
+function renderTargetSection(title: string, targets: ManagedTargetView[], activeProfile?: string): string[] {
+  return [
+    `${title}:`,
+    ...(targets.length > 0
+      ? targets.map((target) => `- ${formatManagedTargetChoice(target, target.name === activeProfile)}`)
+      : ["- (none)"]),
+  ];
+}
+
+function buildManagerOverview(
+  projectConfigPath: string,
+  globalConfigPath: string,
+  localTargets: ManagedTargetView[],
+  globalTargets: ManagedTargetView[],
+  activeProfile?: string,
+  globalParseError?: string,
+): string {
+  const lines = [
+    "SSH Target Manager",
+    `Project config: ${projectConfigPath}`,
+    `Global config: ${globalConfigPath}`,
+    "",
+    ...renderTargetSection("Project-local targets", localTargets, activeProfile),
+    "",
+    ...renderTargetSection("Global targets (read-only here)", globalTargets, activeProfile),
+  ];
+
+  if (globalParseError) {
+    lines.push("", `Global config warning: ${globalParseError}`);
+  }
+
+  lines.push("", "Legend: [LOCAL] editable here · [GLOBAL] read-only here · [SHADOWED] local target overrides same global name");
+  return lines.join("\n");
+}
+
+function buildTargetManagerActionList(localTargets: ManagedTargetView[], globalTargets: ManagedTargetView[]): string[] {
+  return [
+    localTargets.length === 0 ? "Add first local target" : "Add local target",
+    ...(localTargets.length > 0 ? ["Edit local target", "Remove local target"] : []),
+    ...(globalTargets.length > 0 ? ["Import global target to local"] : []),
+    ...(localTargets.length > 0 || globalTargets.some((target) => !target.shadowed) ? ["Connect to target"] : []),
+    "Review local JSON",
+    "Exit",
+  ];
+}
+
+function buildImportTargetDefaults(
+  target: ManagedTargetView,
+  config: SshConfig,
+  localNames: Set<string>,
+): Partial<SshConfigTemplateInput> {
+  const profile = config.targets[target.name];
+  return {
+    targetName: localNames.has(target.name) ? `${target.name}-local` : target.name,
+    remote: target.remote,
+    cwd: target.cwd,
+    environment: target.environment as SshConfigTemplateInput["environment"],
+    aliases: profile?.aliases,
+    requiresConfirmation: profile?.requiresConfirmation ?? (target.environment === "prod"),
+  };
+}
+
 function buildPolicyLog(
   target: ResolvedSshTarget,
   command: string,
@@ -128,6 +206,16 @@ type SshSessionState = {
 };
 
 type SshSummaryFormat = "text" | "markdown" | "json" | "raw";
+type ManagerTargetOrigin = "local" | "global";
+
+type ManagedTargetView = {
+  name: string;
+  remote: string;
+  cwd?: string;
+  environment: string;
+  origin: ManagerTargetOrigin;
+  shadowed?: boolean;
+};
 
 function formatPreflightState(report: SshHealthReport | undefined): string {
   if (!report) return "Preflight: pending";
@@ -161,8 +249,12 @@ function getProjectSshConfigPath(cwd: string): string {
   return path.join(cwd, ".pi", "ssh", "config.json");
 }
 
-function readProjectSshConfigRaw(cwd: string): { raw: Record<string, unknown>; sourceText?: string; parseError?: string } {
-  const configPath = getProjectSshConfigPath(cwd);
+function getGlobalSshConfigPath(): string {
+  const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+  return path.join(agentDir, "ssh", "config.json");
+}
+
+function readConfigRaw(configPath: string): { raw: Record<string, unknown>; sourceText?: string; parseError?: string } {
   if (!fs.existsSync(configPath)) {
     return { raw: {} };
   }
@@ -181,6 +273,14 @@ function readProjectSshConfigRaw(cwd: string): { raw: Record<string, unknown>; s
       parseError: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function readProjectSshConfigRaw(cwd: string): { raw: Record<string, unknown>; sourceText?: string; parseError?: string } {
+  return readConfigRaw(getProjectSshConfigPath(cwd));
+}
+
+function readGlobalSshConfigRaw(): { raw: Record<string, unknown>; sourceText?: string; parseError?: string } {
+  return readConfigRaw(getGlobalSshConfigPath());
 }
 
 function writeProjectSshConfigRaw(cwd: string, raw: Record<string, unknown>): string {
@@ -756,39 +856,36 @@ export default function sshExtension(pi: ExtensionAPI) {
       const raw = await loadEditableProjectConfig(ctx);
       if (!raw) return;
 
+      const globalLoaded = readGlobalSshConfigRaw();
       const localConfig = normalizeSshConfig(raw);
-      const localTargets = listConfiguredTargets(localConfig);
-      const configPath = path.relative(ctx.cwd, getProjectSshConfigPath(ctx.cwd)) || getProjectSshConfigPath(ctx.cwd);
-      const summary = localTargets.length > 0
-        ? localTargets.map((target) => `- ${formatTargetChoice(target, target.name === getTarget()?.profile)}`).join("\n")
-        : "(no project-local targets yet)";
+      const globalConfig = normalizeSshConfig(globalLoaded.raw);
+      const localNames = new Set(Object.keys(localConfig.targets));
+      const localTargets = buildManagedTargets(localConfig, "local");
+      const globalTargets = buildManagedTargets(globalConfig, "global", localNames);
+      const projectConfigPath = path.relative(ctx.cwd, getProjectSshConfigPath(ctx.cwd)) || getProjectSshConfigPath(ctx.cwd);
+      const globalConfigPath = getGlobalSshConfigPath();
+      const overview = buildManagerOverview(projectConfigPath, globalConfigPath, localTargets, globalTargets, getTarget()?.profile, globalLoaded.parseError);
+      const actions = buildTargetManagerActionList(localTargets, globalTargets);
 
-      const actions = [
-        localTargets.length === 0 ? "Add first target" : "Add target",
-        ...(localTargets.length > 0 ? ["Edit target", "Remove target", "Connect to target"] : []),
-        "Review local JSON",
-        "Exit",
-      ];
-
-      const choice = await ctx.ui.select(`SSH Target Manager\nConfig: ${configPath}\n\n${summary}`, actions);
+      const choice = await ctx.ui.select(overview, actions);
       if (!choice || choice === "Exit") return;
 
-      if (choice === "Add first target" || choice === "Add target") {
-        const input = await collectTargetInputViaTui(ctx, "Add SSH target");
+      if (choice === "Add first local target" || choice === "Add local target") {
+        const input = await collectTargetInputViaTui(ctx, "Add local SSH target");
         if (!input) continue;
         const nextRaw = upsertSshTargetInRawConfig(raw, input);
         saveProjectConfigAndReload(ctx, nextRaw, "Updated");
         continue;
       }
 
-      if (choice === "Edit target") {
-        const selected = await ctx.ui.select("Select target to edit", localTargets.map((target) => target.name));
+      if (choice === "Edit local target") {
+        const selected = await ctx.ui.select("Select local target to edit", localTargets.map((target) => target.name));
         if (!selected) continue;
         const currentTargets = raw.targets && typeof raw.targets === "object" ? (raw.targets as Record<string, unknown>) : {};
         const currentTarget = currentTargets[selected] && typeof currentTargets[selected] === "object"
           ? (currentTargets[selected] as Record<string, unknown>)
           : {};
-        const input = await collectTargetInputViaTui(ctx, "Edit SSH target", {
+        const input = await collectTargetInputViaTui(ctx, "Edit local SSH target", {
           targetName: selected,
           remote: typeof currentTarget.remote === "string" ? currentTarget.remote : localConfig.targets[selected]?.remote,
           cwd: typeof currentTarget.cwd === "string" ? currentTarget.cwd : localConfig.targets[selected]?.cwd,
@@ -812,10 +909,10 @@ export default function sshExtension(pi: ExtensionAPI) {
         continue;
       }
 
-      if (choice === "Remove target") {
-        const selected = await ctx.ui.select("Select target to remove", localTargets.map((target) => target.name));
+      if (choice === "Remove local target") {
+        const selected = await ctx.ui.select("Select local target to remove", localTargets.map((target) => target.name));
         if (!selected) continue;
-        const confirmed = await ctx.ui.confirm("Remove SSH target", `Remove project-local target ${selected}?`);
+        const confirmed = await ctx.ui.confirm("Remove local SSH target", `Remove project-local target ${selected}?`);
         if (!confirmed) continue;
         const nextRaw = removeSshTargetFromRawConfig(raw, selected);
         saveProjectConfigAndReload(ctx, nextRaw, "Updated");
@@ -825,15 +922,35 @@ export default function sshExtension(pi: ExtensionAPI) {
         continue;
       }
 
-      if (choice === "Connect to target") {
-        const selected = await ctx.ui.select("Connect to which target?", localTargets.map((target) => target.name));
+      if (choice === "Import global target to local") {
+        const importableTargets = globalTargets;
+        const selected = await ctx.ui.select("Select global target to import", importableTargets.map((target) => formatManagedTargetChoice(target, false)));
         if (!selected) continue;
-        const target = resolveSshTarget(selected, sshConfig);
+        const selectedTarget = importableTargets[importableTargets.findIndex((target) => formatManagedTargetChoice(target, false) === selected)];
+        if (!selectedTarget) continue;
+        const defaults = buildImportTargetDefaults(selectedTarget, globalConfig, localNames);
+        const input = await collectTargetInputViaTui(ctx, "Import global SSH target", defaults);
+        if (!input) continue;
+        const nextRaw = upsertSshTargetInRawConfig(raw, input);
+        saveProjectConfigAndReload(ctx, nextRaw, "Imported into");
+        continue;
+      }
+
+      if (choice === "Connect to target") {
+        const connectableTargets = [
+          ...localTargets,
+          ...globalTargets.filter((target) => !target.shadowed),
+        ];
+        const selected = await ctx.ui.select("Connect to which target?", connectableTargets.map((target) => formatManagedTargetChoice(target, target.name === getTarget()?.profile)));
+        if (!selected) continue;
+        const selectedTarget = connectableTargets[connectableTargets.findIndex((target) => formatManagedTargetChoice(target, target.name === getTarget()?.profile) === selected)];
+        if (!selectedTarget) continue;
+        const target = resolveSshTarget(selectedTarget.name, sshConfig);
         if (!target) {
           ctx.ui.notify("Could not resolve SSH target.", "error");
           continue;
         }
-        await activateTarget(ctx, target, `connect ${selected}`);
+        await activateTarget(ctx, target, `connect ${selectedTarget.name}`);
         return;
       }
 
@@ -1181,17 +1298,30 @@ export default function sshExtension(pi: ExtensionAPI) {
     description: "List configured SSH target profiles",
     handler: async (_args, ctx) => {
       reloadConfig(ctx.cwd);
-      let targets = listConfiguredTargets(sshConfig);
-      if (targets.length === 0) {
+      let localRaw = readProjectSshConfigRaw(ctx.cwd).raw;
+      let localConfig = normalizeSshConfig(localRaw);
+      let localTargets = buildManagedTargets(localConfig, "local");
+      if (localTargets.length === 0 && Object.keys(loadSshConfig(ctx.cwd).targets).length === 0) {
         ctx.hasUI ? ctx.ui.notify("No SSH target profiles configured.", "info") : console.log("No SSH target profiles configured.");
         const targetName = await ensureSshConfigViaTui(ctx);
         if (!targetName) return;
-        targets = listConfiguredTargets(sshConfig);
-        if (targets.length === 0) return;
+        localRaw = readProjectSshConfigRaw(ctx.cwd).raw;
+        localConfig = normalizeSshConfig(localRaw);
+        localTargets = buildManagedTargets(localConfig, "local");
       }
-      const activeProfile = getTarget()?.profile;
-      const lines = targets.map((target) => `- ${formatTargetChoice(target, target.name === activeProfile)}`);
-      const message = lines.join("\n");
+
+      const globalLoaded = readGlobalSshConfigRaw();
+      const globalConfig = normalizeSshConfig(globalLoaded.raw);
+      const localNames = new Set(localTargets.map((target) => target.name));
+      const globalTargets = buildManagedTargets(globalConfig, "global", localNames);
+      const message = buildManagerOverview(
+        path.relative(ctx.cwd, getProjectSshConfigPath(ctx.cwd)) || getProjectSshConfigPath(ctx.cwd),
+        getGlobalSshConfigPath(),
+        localTargets,
+        globalTargets,
+        getTarget()?.profile,
+        globalLoaded.parseError,
+      );
       if (ctx.hasUI) {
         await ctx.ui.editor("SSH Targets", message);
       } else {
@@ -1208,12 +1338,18 @@ export default function sshExtension(pi: ExtensionAPI) {
 
       let reference = String(args || "").trim();
       if (!reference) {
-        let targets = listConfiguredTargets(sshConfig);
+        const localRaw = readProjectSshConfigRaw(ctx.cwd).raw;
+        const localConfig = normalizeSshConfig(localRaw);
+        const localTargets = buildManagedTargets(localConfig, "local");
+        const globalTargets = buildManagedTargets(normalizeSshConfig(readGlobalSshConfigRaw().raw), "global", new Set(localTargets.map((target) => target.name)));
+        let targets = [...localTargets, ...globalTargets.filter((target) => !target.shadowed)];
         if (targets.length === 0) {
           ctx.hasUI ? ctx.ui.notify("No SSH targets configured. Create .pi/ssh/config.json first.", "warning") : console.log("No SSH targets configured. Create .pi/ssh/config.json first.");
           const createdTarget = await ensureSshConfigViaTui(ctx);
           if (!createdTarget) return;
-          targets = listConfiguredTargets(sshConfig);
+          const reloadedLocal = buildManagedTargets(normalizeSshConfig(readProjectSshConfigRaw(ctx.cwd).raw), "local");
+          const reloadedGlobal = buildManagedTargets(normalizeSshConfig(readGlobalSshConfigRaw().raw), "global", new Set(reloadedLocal.map((target) => target.name)));
+          targets = [...reloadedLocal, ...reloadedGlobal.filter((target) => !target.shadowed)];
           reference = createdTarget;
         }
         if (!reference) {
@@ -1221,7 +1357,7 @@ export default function sshExtension(pi: ExtensionAPI) {
             console.log("Usage: /ssh-connect <target>");
             return;
           }
-          const items = targets.map((target) => formatTargetChoice(target, target.name === getTarget()?.profile));
+          const items = targets.map((target) => formatManagedTargetChoice(target, target.name === getTarget()?.profile));
           const selected = await ctx.ui.select("Select SSH target", items);
           if (!selected) return;
           const selectedTarget = targets[items.indexOf(selected)];

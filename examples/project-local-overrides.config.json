@@ -1,0 +1,33 @@
+{
+  "allowlist": ["customer-a-prod", "platform-staging"],
+  "targets": {
+    "customer-a-prod": {
+      "remote": "support@customer-a-prod.example.com",
+      "cwd": "/srv/customer-a/app",
+      "environment": "prod",
+      "requiresConfirmation": true,
+      "aliases": ["cust-a-prod"]
+    },
+    "platform-staging": {
+      "remote": "ops@platform-staging.example.com",
+      "cwd": "/srv/platform/customer-a",
+      "environment": "staging",
+      "aliases": ["customer-a-platform-stage"]
+    }
+  },
+  "environmentPolicies": {
+    "prod": {
+      "requiresConfirmation": true,
+      "confirmWriteOperations": true,
+      "confirmMutatingCommands": true,
+      "blockedCommands": [
+        "rm -rf",
+        "git reset --hard",
+        "terraform destroy",
+        "systemctl stop",
+        "shutdown",
+        "reboot"
+      ]
+    }
+  }
+}
