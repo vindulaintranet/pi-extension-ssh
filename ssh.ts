@@ -195,7 +195,8 @@ function buildImportTargetDefaults(
 function formatRunbookChoice(runbook: LoadedSshRunbook): string {
   const source = runbook.source === "project" ? "[LOCAL]" : "[GLOBAL]";
   const target = runbook.target ? ` -> ${runbook.target}` : "";
-  return `${runbook.name}${target} ${source}`;
+  const params = runbook.parameters ? ` params:${Object.keys(runbook.parameters).join(",")}` : "";
+  return `${runbook.name}${target} ${source}${params}`;
 }
 
 function filterRunbooks(runbooks: LoadedSshRunbook[], query: string): LoadedSshRunbook[] {
@@ -210,7 +211,8 @@ function filterRunbooks(runbooks: LoadedSshRunbook[], query: string): LoadedSshR
       runbook.source,
       runbook.path,
       ...(runbook.tags ?? []),
-      ...Object.keys(runbook.parameters ?? {}),
+      ...Object.entries(runbook.parameters ?? {}).flatMap(([name, definition]) => [name, definition.description || "", definition.default || ""]),
+      ...runbook.steps.flatMap((step) => [step.title || "", step.command]),
     ]
       .join(" ")
       .toLowerCase();
@@ -284,6 +286,52 @@ function formatRunbookReportsBlock(reports: SshRunbookExecutionReport[] | undefi
       `  Parameters: ${Object.keys(report.parameters).length > 0 ? JSON.stringify(report.parameters) : "(none)"}`,
       ...report.steps.map((step) => `  - ${step.index}. ${step.status.toUpperCase()} · ${step.title} · ${step.command}${step.reason ? ` (${step.reason})` : ""}`),
     ]),
+  ].join("\n");
+}
+
+function parseRunbookParamAssignment(value: string): { name: string; value: string } | null {
+  const separatorIndex = value.indexOf("=");
+  if (separatorIndex <= 0) return null;
+  const name = value.slice(0, separatorIndex).trim();
+  const assigned = value.slice(separatorIndex + 1).trim();
+  if (!name || !assigned) return null;
+  return { name, value: assigned };
+}
+
+function buildRunbookSelectorPrompt(allRunbooks: LoadedSshRunbook[], filteredRunbooks: LoadedSshRunbook[], filterQuery: string): string {
+  return [
+    "SSH Runbook Selector",
+    `Filter: ${filterQuery || "(none)"}`,
+    `Matches: ${filteredRunbooks.length}/${allRunbooks.length}`,
+    "",
+    ...(filteredRunbooks.length > 0
+      ? filteredRunbooks.slice(0, 12).map((runbook) => `- ${formatRunbookChoice(runbook)}`)
+      : ["- No runbooks match the current filter"]),
+  ].join("\n");
+}
+
+function buildRunbookReportExport(
+  reports: SshRunbookExecutionReport[],
+  format: Exclude<SshSummaryFormat, "raw">,
+  selectedName?: string,
+): string {
+  const filtered = selectedName ? reports.filter((report) => report.name === selectedName) : reports;
+  if (format === "json") {
+    return JSON.stringify(selectedName && filtered.length === 1 ? filtered[0] : filtered, null, 2);
+  }
+  if (format === "markdown") {
+    return [
+      "# SSH Runbook Report",
+      "",
+      selectedName ? `Selected: ${selectedName}` : `Reports: ${filtered.length}`,
+      "",
+      formatRunbookReportsBlock(filtered, "markdown"),
+    ].join("\n");
+  }
+  return [
+    selectedName ? `Selected runbook: ${selectedName}` : `Runbook reports: ${filtered.length}`,
+    "",
+    formatRunbookReportsBlock(filtered, "text"),
   ].join("\n");
 }
 
@@ -1512,6 +1560,42 @@ export default function sshExtension(pi: ExtensionAPI) {
     return selectedTarget ? resolveSshTarget(selectedTarget.name, sshConfig) : null;
   };
 
+  const selectRunbookViaTui = async (
+    ctx: ExtensionContext,
+    allRunbooks: LoadedSshRunbook[],
+    initialFilter = "",
+  ): Promise<{ runbook: LoadedSshRunbook | null; filterQuery: string }> => {
+    let filterQuery = initialFilter.trim();
+
+    while (true) {
+      const filteredRunbooks = filterRunbooks(allRunbooks, filterQuery);
+      const actions = [
+        "Set filter",
+        ...(filterQuery ? ["Clear filter"] : []),
+        ...(filteredRunbooks.length > 0 ? filteredRunbooks.map(formatRunbookChoice) : []),
+        "Exit",
+      ];
+      const selected = await ctx.ui.select(buildRunbookSelectorPrompt(allRunbooks, filteredRunbooks, filterQuery), actions);
+      if (!selected || selected === "Exit") {
+        return { runbook: null, filterQuery };
+      }
+      if (selected === "Set filter") {
+        const nextFilter = await ctx.ui.input("Filter SSH runbooks", filterQuery || "prod, smoke, deploy, customer-a...");
+        if (nextFilter === undefined) continue;
+        filterQuery = nextFilter.trim();
+        continue;
+      }
+      if (selected === "Clear filter") {
+        filterQuery = "";
+        continue;
+      }
+      const runbook = filteredRunbooks[actions.indexOf(selected) - (filterQuery ? 2 : 1)]
+        ?? filteredRunbooks.find((item) => formatRunbookChoice(item) === selected)
+        ?? null;
+      return { runbook, filterQuery };
+    }
+  };
+
   const executeRunbook = async (
     ctx: ExtensionContext,
     runbook: LoadedSshRunbook,
@@ -1989,6 +2073,74 @@ export default function sshExtension(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("ssh-runbook-report", {
+    description: "Show or export runbook execution reports from the current or most recent SSH session",
+    handler: async (args, ctx) => {
+      const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
+      let format: Exclude<SshSummaryFormat, "raw"> = "text";
+      let outputPath: string | undefined;
+      let useLastSession = false;
+      const nameTokens: string[] = [];
+
+      for (let index = 0; index < tokens.length; index++) {
+        const token = tokens[index];
+        if (token === "--format" && tokens[index + 1]) {
+          const value = tokens[index + 1] as Exclude<SshSummaryFormat, "raw">;
+          if (["text", "markdown", "json"].includes(value)) {
+            format = value;
+            index += 1;
+          }
+          continue;
+        }
+        if (token === "--output" && tokens[index + 1]) {
+          outputPath = tokens[index + 1];
+          index += 1;
+          continue;
+        }
+        if (token === "--last") {
+          useLastSession = true;
+          continue;
+        }
+        nameTokens.push(token);
+      }
+
+      const session = useLastSession ? lastSession : getSummarySession();
+      const reports = session?.runbookReports ?? [];
+      if (reports.length === 0) {
+        const message = "No SSH runbook reports are available yet.";
+        ctx.hasUI ? ctx.ui.notify(message, "info") : console.log(message);
+        return;
+      }
+
+      let selectedName = nameTokens.join(" ").trim() || undefined;
+      if (!selectedName && ctx.hasUI && reports.length > 1) {
+        const options = ["All runbook reports", ...reports.map((report) => report.name)];
+        const selected = await ctx.ui.select("Select runbook report to view/export", options);
+        if (!selected) return;
+        selectedName = selected === "All runbook reports" ? undefined : selected;
+      }
+
+      const selectedReports = selectedName ? reports.filter((report) => report.name === selectedName) : reports;
+      if (selectedReports.length === 0) {
+        const message = `Runbook report not found${selectedName ? `: ${selectedName}` : "."}`;
+        ctx.hasUI ? ctx.ui.notify(message, "warning") : console.log(message);
+        return;
+      }
+
+      const content = buildRunbookReportExport(selectedReports, format, selectedName);
+      if (outputPath) {
+        const absolutePath = exportSessionSummary(ctx, content, outputPath);
+        ctx.hasUI ? ctx.ui.notify(`SSH runbook report exported to ${absolutePath}`, "info") : console.log(`SSH runbook report exported to ${absolutePath}`);
+      }
+
+      if (ctx.hasUI) {
+        await ctx.ui.editor("SSH Runbook Report", content || "(no runbook reports)");
+      } else {
+        console.log(content || "(no runbook reports)");
+      }
+    },
+  });
+
   pi.registerCommand("ssh-runbooks", {
     description: "List available SSH runbooks from project and global runbook directories",
     handler: async (args, ctx) => {
@@ -2048,6 +2200,17 @@ export default function sshExtension(pi: ExtensionAPI) {
           index += 1;
           continue;
         }
+        if ((token === "--param" || token === "--set") && tokens[index + 1]) {
+          const parsed = parseRunbookParamAssignment(tokens[index + 1]);
+          if (parsed) paramOverrides[parsed.name] = parsed.value;
+          index += 1;
+          continue;
+        }
+        if (token.startsWith("--") && token.includes("=")) {
+          const parsed = parseRunbookParamAssignment(token.slice(2));
+          if (parsed) paramOverrides[parsed.name] = parsed.value;
+          continue;
+        }
         if (token.startsWith("--") && tokens[index + 1]) {
           paramOverrides[token.slice(2)] = tokens[index + 1];
           index += 1;
@@ -2065,17 +2228,18 @@ export default function sshExtension(pi: ExtensionAPI) {
 
       if (!runbook) {
         if (!ctx.hasUI) {
-          console.log(`Usage: /ssh-runbook <name> [--target <target>] [--service <name>] [--container <name>] [--path <path>] [--filter <query>]\n\n${buildRunbookListing(runbooks, ctx.cwd)}`);
+          console.log(`Usage: /ssh-runbook <name> [--target <target>] [--service <name>] [--container <name>] [--path <path>] [--param key=value] [--filter <query>]\n\n${buildRunbookListing(runbooks, ctx.cwd)}`);
           return;
         }
-        const items = runbooks.map(formatRunbookChoice);
-        const selected = await ctx.ui.select("Select SSH runbook", items);
-        if (!selected) return;
-        runbook = runbooks[items.indexOf(selected)];
+        const selected = await selectRunbookViaTui(ctx, allRunbooks, filterQuery);
+        filterQuery = selected.filterQuery;
+        runbook = selected.runbook ?? undefined;
+        if (!runbook) return;
       }
 
       if (!runbook) {
-        ctx.hasUI ? ctx.ui.notify("Runbook not found.", "error") : console.error("Runbook not found.");
+        const message = filterQuery ? `Runbook not found for filter: ${filterQuery}` : "Runbook not found.";
+        ctx.hasUI ? ctx.ui.notify(message, "error") : console.error(message);
         return;
       }
 

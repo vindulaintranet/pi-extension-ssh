@@ -140,6 +140,7 @@ Runbooks let you:
 - preview steps before execution
 - require per-runbook or per-step confirmation
 - pass parameters such as `service`, `container`, and `path`
+- pass extra generic parameters with `--param key=value` or inline flags like `--release=2026.03.23`
 - keep execution tied to the same SSH guardrails and logs
 
 ---
@@ -281,8 +282,9 @@ The manager shows both:
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path
 - `/ssh-health [target]` — verify connectivity and required remote tools on demand
 - `/ssh-summary [--format text|markdown|json|raw] [--output <path>] [--last] [--include-entries] [--raw]` — review or export the current/recent SSH session summary, including runbook reports when present
+- `/ssh-runbook-report [name] [--format text|markdown|json] [--output <path>] [--last]` — export just the runbook execution report(s) from the current or most recent session
 - `/ssh-runbooks [query|--filter <query>]` — list or filter available project-local and global SSH runbooks
-- `/ssh-runbook <name> [--target <target>] [--service <name>] [--container <name>] [--path <path>] [--filter <query>]` — preview and execute a named SSH runbook with parameter overrides
+- `/ssh-runbook <name> [--target <target>] [--service <name>] [--container <name>] [--path <path>] [--param key=value] [--filter <query>]` — preview and execute a named SSH runbook with parameter overrides
 - `/ssh-targets` — list project-local and global profiles with source markers
 - `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
 
@@ -300,8 +302,9 @@ Example runbook usage:
 ```text
 /ssh-runbooks
 /ssh-runbooks prod
-/ssh-runbook prod-health-check --container app
+/ssh-runbook prod-health-check --container app --param release=2026.03.23
 /ssh-runbook staging-deploy-smoke --target staging-app --service web --path /srv/app
+/ssh-runbook-report --format markdown --output .pi/ssh/reports/runbooks.md
 ```
 
 ---

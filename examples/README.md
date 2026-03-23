@@ -32,7 +32,8 @@ A common setup is:
 - store shared, centrally managed targets in `~/.pi/agent/ssh/config.json`
 - store project-specific targets and overrides in `.pi/ssh/config.json`
 - use `/ssh-manage` to view both layers, filter/search large target sets, and import global targets into the project when needed
-- use `/ssh-runbooks` and `/ssh-runbook` for human-readable operational checklists with optional parameters such as `service`, `container`, and `path`
+- use `/ssh-runbooks` and `/ssh-runbook` for human-readable operational checklists with optional parameters such as `service`, `container`, and `path`, plus generic `--param key=value` overrides
+- use `/ssh-runbook-report` when you want only the runbook execution artifact, separate from the broader session summary
 
 ## How to use
 
