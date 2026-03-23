@@ -86,6 +86,7 @@ export interface SshConfigTemplateInput {
   cwd?: string;
   environment: "default" | "dev" | "staging" | "prod";
   aliases?: string[];
+  requiresConfirmation?: boolean;
 }
 
 export const OUTPUT_MAX_LINES = 2000;
@@ -515,22 +516,77 @@ export function buildRemoteCommand(remoteCwd: string | undefined, command: strin
   return `cd ${JSON.stringify(remoteCwd)} && ${command}`;
 }
 
-export function createStarterSshConfig(input: SshConfigTemplateInput): string {
+function buildWritableTargetProfile(input: SshConfigTemplateInput): Record<string, unknown> {
   const aliases = (input.aliases ?? []).map((alias) => alias.trim()).filter(Boolean);
+  const requiresConfirmation = input.requiresConfirmation ?? input.environment === "prod";
+
+  return {
+    remote: input.remote,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+    environment: input.environment,
+    ...(requiresConfirmation ? { requiresConfirmation: true } : {}),
+    ...(aliases.length > 0 ? { aliases } : {}),
+  };
+}
+
+export function upsertSshTargetInRawConfig(
+  raw: unknown,
+  input: SshConfigTemplateInput,
+  options?: { previousName?: string },
+): Record<string, unknown> {
+  const record = raw && typeof raw === "object" ? ({ ...(raw as Record<string, unknown>) } satisfies Record<string, unknown>) : {};
+  const targets =
+    record.targets && typeof record.targets === "object"
+      ? { ...(record.targets as Record<string, unknown>) }
+      : {};
+
+  const previousName = options?.previousName?.trim();
+  if (previousName && previousName !== input.targetName) {
+    delete targets[previousName];
+  }
+
+  targets[input.targetName] = buildWritableTargetProfile(input);
+  record.targets = targets;
+
+  const hasExplicitAllowlist = Array.isArray(record.allowlist);
+  const allowlist = hasExplicitAllowlist ? [...(record.allowlist as unknown[]).map((entry) => String(entry))] : [];
+  if (hasExplicitAllowlist) {
+    const filtered = allowlist.filter((entry) => entry !== previousName);
+    if (!filtered.includes(input.targetName)) filtered.push(input.targetName);
+    record.allowlist = filtered;
+  } else if (Object.keys(targets).length === 1) {
+    record.allowlist = [input.targetName];
+  }
+
+  return record;
+}
+
+export function removeSshTargetFromRawConfig(raw: unknown, targetName: string): Record<string, unknown> {
+  const record = raw && typeof raw === "object" ? ({ ...(raw as Record<string, unknown>) } satisfies Record<string, unknown>) : {};
+  const targets =
+    record.targets && typeof record.targets === "object"
+      ? { ...(record.targets as Record<string, unknown>) }
+      : {};
+
+  delete targets[targetName];
+  record.targets = targets;
+
+  if (Array.isArray(record.allowlist)) {
+    record.allowlist = (record.allowlist as unknown[]).map((entry) => String(entry)).filter((entry) => entry !== targetName);
+  }
+
+  return record;
+}
+
+export function createStarterSshConfig(input: SshConfigTemplateInput): string {
   const config: Record<string, unknown> = {
     allowlist: [input.targetName],
     targets: {
-      [input.targetName]: {
-        remote: input.remote,
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        environment: input.environment,
-        ...(input.environment === "prod" ? { requiresConfirmation: true } : {}),
-        ...(aliases.length > 0 ? { aliases } : {}),
-      },
+      [input.targetName]: buildWritableTargetProfile(input),
     },
   };
 
-  if (input.environment === "prod") {
+  if ((input.requiresConfirmation ?? input.environment === "prod") && input.environment === "prod") {
     config.environmentPolicies = {
       prod: {
         requiresConfirmation: true,

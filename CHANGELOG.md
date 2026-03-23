@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Adds `/ssh-manage` for TUI-based add/edit/remove/review/connect workflows on project-local SSH targets
+- Keeps `.pi/ssh/config.json` as the source of truth while reducing manual JSON editing for day-to-day target management
+
 ## 0.1.4
 
 - Adds `/ssh-configure` to create `.pi/ssh/config.json` through a TUI wizard

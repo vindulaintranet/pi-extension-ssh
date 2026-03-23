@@ -169,6 +169,8 @@ pi -e ./ssh.ts --ssh user@host:/srv/app
 
 If no targets exist yet, the extension can now open a TUI wizard and create `.pi/ssh/config.json` for you.
 
+After that, use `/ssh-manage` to add, edit, remove, review, or connect targets without manually opening the JSON first.
+
 ### SSH operations context
 
 ```text
@@ -232,9 +234,16 @@ Create a project-local SSH config through the TUI:
 /ssh-configure
 ```
 
+Manage project-local SSH targets through the TUI:
+
+```text
+/ssh-manage
+```
+
 ## Operational commands
 
 - `/ssh-configure` — create `.pi/ssh/config.json` through a TUI wizard
+- `/ssh-manage` — add, edit, remove, review, and connect project-local SSH targets from the TUI
 - `/ssh-connect` — choose a configured target interactively or pass one explicitly; offers config creation when none exist
 - `/ssh-disconnect` — leave the active SSH session target
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path

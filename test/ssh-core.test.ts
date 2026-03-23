@@ -21,9 +21,11 @@ import {
   parseSshInvocation,
   parseSshTarget,
   readSshLogEntries,
+  removeSshTargetFromRawConfig,
   resolveSshTarget,
   summarizeSshLogEntries,
   truncateOutput,
+  upsertSshTargetInRawConfig,
 } from "../ssh-core.ts";
 
 async function withTempDir(run: (dir: string) => Promise<void>) {
@@ -259,6 +261,51 @@ test("createStarterSshConfig builds a prod-safe starter config", () => {
   assert.deepEqual(parsed.targets["prod-app"].aliases, ["production", "live"]);
   assert.equal(parsed.environmentPolicies.prod.confirmWriteOperations, true);
   assert.match(text, /"blockedCommands"/);
+});
+
+test("upsertSshTargetInRawConfig adds and renames targets while keeping allowlist in sync", () => {
+  const initial = {
+    allowlist: ["staging-app"],
+    targets: {
+      "staging-app": {
+        remote: "ops@staging-host",
+        cwd: "/srv/app",
+        environment: "staging",
+      },
+    },
+  };
+
+  const renamed = upsertSshTargetInRawConfig(
+    initial,
+    {
+      targetName: "prod-app",
+      remote: "ops@prod-host",
+      cwd: "/srv/app",
+      environment: "prod",
+      aliases: ["production"],
+    },
+    { previousName: "staging-app" },
+  );
+
+  assert.deepEqual(renamed.allowlist, ["prod-app"]);
+  assert.equal((renamed.targets as Record<string, any>)["prod-app"].remote, "ops@prod-host");
+  assert.equal((renamed.targets as Record<string, any>)["prod-app"].requiresConfirmation, true);
+  assert.equal((renamed.targets as Record<string, any>)["staging-app"], undefined);
+});
+
+test("removeSshTargetFromRawConfig removes target and allowlist entry", () => {
+  const initial = {
+    allowlist: ["prod-app", "staging-app"],
+    targets: {
+      "prod-app": { remote: "ops@prod-host", environment: "prod" },
+      "staging-app": { remote: "ops@staging-host", environment: "staging" },
+    },
+  };
+
+  const updated = removeSshTargetFromRawConfig(initial, "prod-app");
+  assert.deepEqual(updated.allowlist, ["staging-app"]);
+  assert.equal((updated.targets as Record<string, any>)["prod-app"], undefined);
+  assert.equal((updated.targets as Record<string, any>)["staging-app"].remote, "ops@staging-host");
 });
 
 test("read/filter/summarize SSH logs support session export flows", async () => {

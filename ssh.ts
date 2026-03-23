@@ -32,14 +32,18 @@ import {
   loadSshConfig,
   logSshCall,
   mapLocalPathToRemote,
+  normalizeSshConfig,
   parseSshInvocation,
   parseSshTarget,
   readSshLogEntries,
+  removeSshTargetFromRawConfig,
   resolveSshTarget,
   summarizeSshLogEntries,
   truncateOutput,
+  upsertSshTargetInRawConfig,
   type ResolvedSshTarget,
   type SshConfig,
+  type SshConfigTemplateInput,
 } from "./ssh-core";
 
 /**
@@ -155,6 +159,35 @@ function formatDuration(startedAt: string, endedAt?: string): string {
 
 function getProjectSshConfigPath(cwd: string): string {
   return path.join(cwd, ".pi", "ssh", "config.json");
+}
+
+function readProjectSshConfigRaw(cwd: string): { raw: Record<string, unknown>; sourceText?: string; parseError?: string } {
+  const configPath = getProjectSshConfigPath(cwd);
+  if (!fs.existsSync(configPath)) {
+    return { raw: {} };
+  }
+
+  const sourceText = fs.readFileSync(configPath, "utf8");
+  try {
+    const parsed = JSON.parse(sourceText) as unknown;
+    return {
+      raw: parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {},
+      sourceText,
+    };
+  } catch (error) {
+    return {
+      raw: {},
+      sourceText,
+      parseError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function writeProjectSshConfigRaw(cwd: string, raw: Record<string, unknown>): string {
+  const configPath = getProjectSshConfigPath(cwd);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  return configPath;
 }
 
 function clearTargetUi(ctx: ExtensionContext): void {
@@ -605,6 +638,211 @@ export default function sshExtension(pi: ExtensionAPI) {
     }
   };
 
+  const loadEditableProjectConfig = async (ctx: ExtensionContext): Promise<Record<string, unknown> | null> => {
+    const loaded = readProjectSshConfigRaw(ctx.cwd);
+    if (!loaded.parseError) {
+      return loaded.raw;
+    }
+
+    if (!ctx.hasUI) {
+      console.warn(`Project SSH config is invalid JSON: ${loaded.parseError}`);
+      return null;
+    }
+
+    ctx.ui.notify(`Project SSH config is invalid JSON: ${loaded.parseError}`, "error");
+    let draft = loaded.sourceText || "{}\n";
+    while (true) {
+      const edited = await ctx.ui.editor("Repair project SSH config", draft);
+      if (edited === undefined) return null;
+      try {
+        const parsed = JSON.parse(edited) as unknown;
+        const raw = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+        writeProjectSshConfigRaw(ctx.cwd, raw);
+        reloadConfig(ctx.cwd);
+        ctx.ui.notify(`Saved ${path.relative(ctx.cwd, getProjectSshConfigPath(ctx.cwd)) || getProjectSshConfigPath(ctx.cwd)}`, "info");
+        return raw;
+      } catch (error) {
+        draft = edited;
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Invalid JSON: ${message}`, "error");
+      }
+    }
+  };
+
+  const collectTargetInputViaTui = async (
+    ctx: ExtensionContext,
+    title: string,
+    initial?: Partial<SshConfigTemplateInput>,
+  ): Promise<SshConfigTemplateInput | null> => {
+    if (!ctx.hasUI) return null;
+
+    const targetName = (await ctx.ui.input(`${title}: profile name`, initial?.targetName || "prod-app"))?.trim();
+    if (!targetName) return null;
+
+    const remote = (await ctx.ui.input(`${title}: remote (user@host)`, initial?.remote || "ops@prod-host"))?.trim();
+    if (!remote) return null;
+
+    const cwd = (await ctx.ui.input(`${title}: remote working directory`, initial?.cwd || "/srv/app"))?.trim() || "";
+    const environments = ["default", "dev", "staging", "prod"] as const;
+    const preferredEnvironment = initial?.environment || "default";
+    const environment = await ctx.ui.select(
+      `${title}: environment`,
+      [preferredEnvironment, ...environments.filter((value) => value !== preferredEnvironment)],
+    );
+    if (!environment) return null;
+
+    const aliasesInput = (await ctx.ui.input(
+      `${title}: aliases (optional, comma-separated)`,
+      initial?.aliases?.join(", ") || (environment === "prod" ? "production, live" : ""),
+    ))?.trim() || "";
+    const aliases = aliasesInput.split(",").map((value) => value.trim()).filter(Boolean);
+
+    const defaultConfirmation = initial?.requiresConfirmation ?? (environment === "prod");
+    const confirmationChoice = await ctx.ui.select(
+      `${title}: require confirmation before connect?`,
+      defaultConfirmation ? ["yes", "no"] : ["no", "yes"],
+    );
+    if (!confirmationChoice) return null;
+
+    return {
+      targetName,
+      remote,
+      cwd: cwd || undefined,
+      environment: environment as SshConfigTemplateInput["environment"],
+      aliases,
+      requiresConfirmation: confirmationChoice === "yes",
+    };
+  };
+
+  const saveProjectConfigAndReload = (ctx: ExtensionContext, raw: Record<string, unknown>, verb: string): string => {
+    const configPath = writeProjectSshConfigRaw(ctx.cwd, raw);
+    reloadConfig(ctx.cwd);
+    if (ctx.hasUI) {
+      ctx.ui.notify(`${verb} ${path.relative(ctx.cwd, configPath) || configPath}`, "info");
+    }
+    return configPath;
+  };
+
+  const openProjectConfigEditor = async (ctx: ExtensionContext, title = "Review project SSH config"): Promise<boolean> => {
+    if (!ctx.hasUI) return false;
+    const current = loadEditableProjectConfig(ctx);
+    let raw = await current;
+    if (!raw) return false;
+
+    let draft = `${JSON.stringify(raw, null, 2)}\n`;
+    while (true) {
+      const edited = await ctx.ui.editor(title, draft);
+      if (edited === undefined) return false;
+      try {
+        const parsed = JSON.parse(edited) as unknown;
+        raw = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+        saveProjectConfigAndReload(ctx, raw, "Saved");
+        return true;
+      } catch (error) {
+        draft = edited;
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Invalid JSON: ${message}`, "error");
+      }
+    }
+  };
+
+  const manageSshTargetsViaTui = async (ctx: ExtensionContext): Promise<void> => {
+    if (!ctx.hasUI) {
+      console.log("/ssh-manage requires interactive mode.");
+      return;
+    }
+
+    while (true) {
+      const raw = await loadEditableProjectConfig(ctx);
+      if (!raw) return;
+
+      const localConfig = normalizeSshConfig(raw);
+      const localTargets = listConfiguredTargets(localConfig);
+      const configPath = path.relative(ctx.cwd, getProjectSshConfigPath(ctx.cwd)) || getProjectSshConfigPath(ctx.cwd);
+      const summary = localTargets.length > 0
+        ? localTargets.map((target) => `- ${formatTargetChoice(target, target.name === getTarget()?.profile)}`).join("\n")
+        : "(no project-local targets yet)";
+
+      const actions = [
+        localTargets.length === 0 ? "Add first target" : "Add target",
+        ...(localTargets.length > 0 ? ["Edit target", "Remove target", "Connect to target"] : []),
+        "Review local JSON",
+        "Exit",
+      ];
+
+      const choice = await ctx.ui.select(`SSH Target Manager\nConfig: ${configPath}\n\n${summary}`, actions);
+      if (!choice || choice === "Exit") return;
+
+      if (choice === "Add first target" || choice === "Add target") {
+        const input = await collectTargetInputViaTui(ctx, "Add SSH target");
+        if (!input) continue;
+        const nextRaw = upsertSshTargetInRawConfig(raw, input);
+        saveProjectConfigAndReload(ctx, nextRaw, "Updated");
+        continue;
+      }
+
+      if (choice === "Edit target") {
+        const selected = await ctx.ui.select("Select target to edit", localTargets.map((target) => target.name));
+        if (!selected) continue;
+        const currentTargets = raw.targets && typeof raw.targets === "object" ? (raw.targets as Record<string, unknown>) : {};
+        const currentTarget = currentTargets[selected] && typeof currentTargets[selected] === "object"
+          ? (currentTargets[selected] as Record<string, unknown>)
+          : {};
+        const input = await collectTargetInputViaTui(ctx, "Edit SSH target", {
+          targetName: selected,
+          remote: typeof currentTarget.remote === "string" ? currentTarget.remote : localConfig.targets[selected]?.remote,
+          cwd: typeof currentTarget.cwd === "string" ? currentTarget.cwd : localConfig.targets[selected]?.cwd,
+          environment: typeof currentTarget.environment === "string"
+            ? (currentTarget.environment as SshConfigTemplateInput["environment"])
+            : (localConfig.targets[selected]?.environment as SshConfigTemplateInput["environment"] | undefined),
+          aliases: Array.isArray(currentTarget.aliases)
+            ? currentTarget.aliases.map((value) => String(value))
+            : localConfig.targets[selected]?.aliases,
+          requiresConfirmation:
+            typeof currentTarget.requiresConfirmation === "boolean"
+              ? currentTarget.requiresConfirmation
+              : localConfig.targets[selected]?.requiresConfirmation,
+        });
+        if (!input) continue;
+        const nextRaw = upsertSshTargetInRawConfig(raw, input, { previousName: selected });
+        saveProjectConfigAndReload(ctx, nextRaw, "Updated");
+        if (getTarget()?.profile === selected && input.targetName !== selected) {
+          ctx.ui.notify("The active SSH session still references the old target name until you reconnect.", "warning");
+        }
+        continue;
+      }
+
+      if (choice === "Remove target") {
+        const selected = await ctx.ui.select("Select target to remove", localTargets.map((target) => target.name));
+        if (!selected) continue;
+        const confirmed = await ctx.ui.confirm("Remove SSH target", `Remove project-local target ${selected}?`);
+        if (!confirmed) continue;
+        const nextRaw = removeSshTargetFromRawConfig(raw, selected);
+        saveProjectConfigAndReload(ctx, nextRaw, "Updated");
+        if (getTarget()?.profile === selected) {
+          ctx.ui.notify("Removed target from config. The current SSH session remains active until you disconnect.", "warning");
+        }
+        continue;
+      }
+
+      if (choice === "Connect to target") {
+        const selected = await ctx.ui.select("Connect to which target?", localTargets.map((target) => target.name));
+        if (!selected) continue;
+        const target = resolveSshTarget(selected, sshConfig);
+        if (!target) {
+          ctx.ui.notify("Could not resolve SSH target.", "error");
+          continue;
+        }
+        await activateTarget(ctx, target, `connect ${selected}`);
+        return;
+      }
+
+      if (choice === "Review local JSON") {
+        await openProjectConfigEditor(ctx);
+      }
+    }
+  };
+
   const closeActiveSession = (ctx: ExtensionContext, disconnectReason: string): SshSessionState | null => {
     if (!activeSession) return null;
     const endedSession: SshSessionState = {
@@ -923,12 +1161,19 @@ export default function sshExtension(pi: ExtensionAPI) {
         return;
       }
       const targets = listConfiguredTargets(sshConfig).map((configured) => `- ${formatTargetChoice(configured, configured.name === target.profile)}`);
-      const message = [`Created target: ${formatTargetLabel(target)}`, "", "Configured targets:", ...targets].join("\n");
+      const message = [`Created target: ${formatTargetLabel(target)}`, "", "Configured targets:", ...targets, "", "Tip: run /ssh-manage for add/edit/remove operations."].join("\n");
       if (ctx.hasUI) {
         await ctx.ui.editor("SSH Config Created", message);
       } else {
         console.log(message);
       }
+    },
+  });
+
+  pi.registerCommand("ssh-manage", {
+    description: "Manage project-local SSH targets via TUI",
+    handler: async (_args, ctx) => {
+      await manageSshTargetsViaTui(ctx);
     },
   });
 
