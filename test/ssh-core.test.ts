@@ -14,10 +14,12 @@ import {
   isPotentiallyMutatingCommand,
   isSshTargetAllowed,
   listConfiguredTargets,
+  listSshRunbooks,
   loadSshConfig,
   logSshCall,
   mapLocalPathToRemote,
   normalizeSshConfig,
+  normalizeSshRunbook,
   parseSshInvocation,
   parseSshTarget,
   readSshLogEntries,
@@ -306,6 +308,64 @@ test("removeSshTargetFromRawConfig removes target and allowlist entry", () => {
   assert.deepEqual(updated.allowlist, ["staging-app"]);
   assert.equal((updated.targets as Record<string, any>)["prod-app"], undefined);
   assert.equal((updated.targets as Record<string, any>)["staging-app"].remote, "ops@staging-host");
+});
+
+test("normalizeSshRunbook supports string and object steps", () => {
+  const runbook = normalizeSshRunbook(
+    {
+      title: "Production health",
+      target: "prod-app",
+      steps: [
+        "pwd",
+        { title: "List processes", command: "ps aux", confirm: false, expectedExitCodes: [0] },
+      ],
+    },
+    "prod-health",
+  );
+
+  assert.equal(runbook?.name, "prod-health");
+  assert.equal(runbook?.title, "Production health");
+  assert.equal(runbook?.target, "prod-app");
+  assert.equal(runbook?.steps[0]?.command, "pwd");
+  assert.equal(runbook?.steps[1]?.title, "List processes");
+});
+
+test("listSshRunbooks merges global and project runbooks with project override", async () => {
+  await withTempDir(async (dir) => {
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const agentDir = path.join(dir, "agent-home");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    await fs.mkdir(path.join(agentDir, "ssh", "runbooks"), { recursive: true });
+    await fs.writeFile(
+      path.join(agentDir, "ssh", "runbooks", "shared-checks.json"),
+      JSON.stringify({ title: "Shared checks", steps: ["pwd"] }),
+      "utf8",
+    );
+
+    await fs.mkdir(path.join(dir, ".pi", "ssh", "runbooks"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, ".pi", "ssh", "runbooks", "shared-checks.json"),
+      JSON.stringify({ title: "Project checks", steps: ["ls -la"] }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(dir, ".pi", "ssh", "runbooks", "deploy-checks.json"),
+      JSON.stringify({ title: "Deploy checks", target: "staging-app", steps: ["pwd", { command: "docker ps" }] }),
+      "utf8",
+    );
+
+    try {
+      const runbooks = listSshRunbooks(dir);
+      assert.deepEqual(runbooks.map((runbook) => runbook.name), ["deploy-checks", "shared-checks"]);
+      assert.equal(runbooks.find((runbook) => runbook.name === "shared-checks")?.title, "Project checks");
+      assert.equal(runbooks.find((runbook) => runbook.name === "shared-checks")?.source, "project");
+      assert.equal(runbooks.find((runbook) => runbook.name === "deploy-checks")?.target, "staging-app");
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
+  });
 });
 
 test("read/filter/summarize SSH logs support session export flows", async () => {

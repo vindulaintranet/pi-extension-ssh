@@ -1,0 +1,25 @@
+{
+  "name": "staging-deploy-smoke",
+  "title": "Staging deploy smoke test",
+  "description": "Basic smoke checks for a staging deploy.",
+  "target": "staging-app",
+  "tags": ["staging", "deploy", "smoke"],
+  "steps": [
+    {
+      "title": "Show current directory",
+      "command": "pwd"
+    },
+    {
+      "title": "Show git revision",
+      "command": "git rev-parse --short HEAD"
+    },
+    {
+      "title": "List containers",
+      "command": "docker ps"
+    },
+    {
+      "title": "Open recent logs",
+      "command": "docker logs --tail 50 app"
+    }
+  ]
+}

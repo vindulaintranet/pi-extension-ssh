@@ -30,6 +30,7 @@ import {
   isPotentiallyMutatingCommand,
   isSshTargetAllowed,
   listConfiguredTargets,
+  listSshRunbooks,
   loadSshConfig,
   logSshCall,
   mapLocalPathToRemote,
@@ -42,6 +43,7 @@ import {
   summarizeSshLogEntries,
   truncateOutput,
   upsertSshTargetInRawConfig,
+  type LoadedSshRunbook,
   type ResolvedSshTarget,
   type SshConfig,
   type SshConfigTemplateInput,
@@ -188,6 +190,63 @@ function buildImportTargetDefaults(
     aliases: profile?.aliases,
     requiresConfirmation: profile?.requiresConfirmation ?? (target.environment === "prod"),
   };
+}
+
+function formatRunbookChoice(runbook: LoadedSshRunbook): string {
+  const source = runbook.source === "project" ? "[LOCAL]" : "[GLOBAL]";
+  const target = runbook.target ? ` -> ${runbook.target}` : "";
+  return `${runbook.name}${target} ${source}`;
+}
+
+function renderRunbookPreview(runbook: LoadedSshRunbook, target: ResolvedSshTarget): string {
+  const steps = runbook.steps.map((step, index) => {
+    const confirm = step.confirm ? " [confirm]" : "";
+    return `${index + 1}. ${step.title || step.command}${confirm}\n   $ ${step.command}`;
+  });
+  return [
+    `Runbook: ${runbook.title}`,
+    `Name: ${runbook.name}`,
+    `Source: ${runbook.source}`,
+    `File: ${runbook.path}`,
+    `Target: ${formatTargetLabel(target)}`,
+    ...(runbook.description ? [`Description: ${runbook.description}`] : []),
+    ...(runbook.tags?.length ? [`Tags: ${runbook.tags.join(", ")}`] : []),
+    `Requires runbook confirmation: ${runbook.requiresConfirmation ? "yes" : "no"}`,
+    "",
+    "Steps:",
+    ...steps,
+  ].join("\n");
+}
+
+function getRunbookDirs(cwd: string): { project: string; global: string } {
+  const globalDir = path.join(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"), "ssh", "runbooks");
+  return {
+    project: path.join(cwd, ".pi", "ssh", "runbooks"),
+    global: globalDir,
+  };
+}
+
+function buildRunbookListing(runbooks: LoadedSshRunbook[], cwd: string): string {
+  const dirs = getRunbookDirs(cwd);
+  const lines = [
+    "SSH Runbooks",
+    `Project dir: ${dirs.project}`,
+    `Global dir: ${dirs.global}`,
+    "",
+  ];
+
+  if (runbooks.length === 0) {
+    lines.push("- No runbooks configured");
+  } else {
+    for (const runbook of runbooks) {
+      const tags = runbook.tags?.length ? ` tags=${runbook.tags.join(",")}` : "";
+      lines.push(`- ${runbook.name} ${runbook.source === "project" ? "[LOCAL]" : "[GLOBAL]"}${runbook.target ? ` target=${runbook.target}` : ""}${tags}`);
+      if (runbook.description) lines.push(`  ${runbook.description}`);
+    }
+  }
+
+  lines.push("", "Tip: store JSON runbooks in .pi/ssh/runbooks/ or ~/.pi/agent/ssh/runbooks/");
+  return lines.join("\n");
 }
 
 function buildPolicyLog(
@@ -1263,6 +1322,172 @@ export default function sshExtension(pi: ExtensionAPI) {
     return true;
   };
 
+  const selectRunbookTarget = async (ctx: ExtensionContext, runbook: LoadedSshRunbook, overrideTarget?: string): Promise<ResolvedSshTarget | null> => {
+    const reference = overrideTarget || runbook.target || getTarget()?.profile || getTarget()?.reference;
+    if (reference) {
+      return resolveSshTarget(reference, sshConfig);
+    }
+
+    const targets = listConfiguredTargets(sshConfig);
+    if (targets.length === 0) {
+      const message = "Runbook target is not configured. Connect first or add targets in SSH config.";
+      ctx.hasUI ? ctx.ui.notify(message, "warning") : console.log(message);
+      return null;
+    }
+    if (!ctx.hasUI) {
+      console.log("Runbook requires a target. Use /ssh-runbook <name> --target <target>.");
+      return null;
+    }
+
+    const items = targets.map((target) => formatTargetChoice(target, target.name === getTarget()?.profile));
+    const selected = await ctx.ui.select(`Select target for runbook ${runbook.name}`, items);
+    if (!selected) return null;
+    const selectedTarget = targets[items.indexOf(selected)];
+    return selectedTarget ? resolveSshTarget(selectedTarget.name, sshConfig) : null;
+  };
+
+  const executeRunbook = async (ctx: ExtensionContext, runbook: LoadedSshRunbook, overrideTarget?: string): Promise<void> => {
+    reloadConfig(ctx.cwd);
+    logPath = ensureLogPath(ctx.cwd, logPath);
+
+    const target = await selectRunbookTarget(ctx, runbook, overrideTarget);
+    if (!target) {
+      ctx.hasUI ? ctx.ui.notify("Could not resolve runbook target.", "error") : console.error("Could not resolve runbook target.");
+      return;
+    }
+
+    const readyTarget = await ensureTargetReady(ctx, { ...target }, `runbook ${runbook.name}`);
+    if (!readyTarget) return;
+
+    const preview = renderRunbookPreview(runbook, readyTarget);
+    if (ctx.hasUI) {
+      await ctx.ui.editor(`SSH Runbook: ${runbook.name}`, preview);
+    } else {
+      console.log(preview);
+    }
+
+    if (runbook.requiresConfirmation) {
+      if (!ctx.hasUI) {
+        ctx.hasUI ? ctx.ui.notify("Runbook requires interactive confirmation.", "warning") : console.warn("Runbook requires interactive confirmation.");
+        return;
+      }
+      const confirmed = await ctx.ui.confirm("Confirm runbook", `Run ${runbook.title} against ${formatTargetLabel(readyTarget)}?`);
+      if (!confirmed) return;
+    }
+
+    if (getLogPath()) {
+      logSshCall(
+        {
+          remote: readyTarget.remote,
+          command: `runbook:start ${runbook.name}`,
+          type: "runbook",
+          cwd: ctx.cwd,
+          mode: "command",
+          environment: readyTarget.environment,
+          profile: readyTarget.profile,
+          source: readyTarget.source,
+          decision: "executed",
+          reason: `${runbook.steps.length} step(s) from ${runbook.source}`,
+        },
+        getLogPath()!,
+      );
+    }
+
+    const policy = getEnvironmentPolicy(readyTarget.environment, sshConfig);
+    const resultLines = [
+      `Runbook: ${runbook.title}`,
+      `Name: ${runbook.name}`,
+      `Target: ${formatTargetLabel(readyTarget)}`,
+      `Source: ${runbook.source}`,
+      "",
+      "Results:",
+    ];
+
+    for (const [index, step] of runbook.steps.entries()) {
+      const label = step.title || step.command;
+      const blockedReason = getBlockedCommandReason(step.command, policy);
+      if (blockedReason) {
+        resultLines.push(`- Step ${index + 1}: BLOCKED · ${label}`, `  Reason: ${blockedReason}`);
+        if (getLogPath()) {
+          logSshCall(
+            {
+              remote: readyTarget.remote,
+              command: `runbook:${runbook.name}:step:${index + 1} ${step.command}`,
+              type: "runbook",
+              cwd: ctx.cwd,
+              mode: "command",
+              environment: readyTarget.environment,
+              profile: readyTarget.profile,
+              source: readyTarget.source,
+              decision: "blocked",
+              reason: blockedReason,
+            },
+            getLogPath()!,
+          );
+        }
+        break;
+      }
+
+      const needsConfirmation = step.confirm || (policy.confirmMutatingCommands && isPotentiallyMutatingCommand(step.command));
+      if (needsConfirmation) {
+        if (!ctx.hasUI) {
+          resultLines.push(`- Step ${index + 1}: BLOCKED · ${label}`, "  Reason: Interactive confirmation required");
+          break;
+        }
+        const confirmed = await ctx.ui.confirm(
+          `Confirm runbook step ${index + 1}`,
+          `${label}\n\nTarget: ${formatTargetLabel(readyTarget)}\nCommand: ${step.command}`,
+        );
+        if (!confirmed) {
+          resultLines.push(`- Step ${index + 1}: CANCELLED · ${label}`);
+          break;
+        }
+      }
+
+      try {
+        const output = await sshExec(
+          readyTarget,
+          buildRemoteCommand(readyTarget.remoteCwd, step.command),
+          "runbook-step",
+          ctx.cwd,
+          getLogPath(),
+          "command",
+          step.expectedExitCodes ?? [],
+        );
+        const text = truncateOutput(output.toString()) || "(no output)";
+        resultLines.push(`- Step ${index + 1}: OK · ${label}`, ...text.split(/\r?\n/).map((line) => `  ${line}`));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        resultLines.push(`- Step ${index + 1}: FAILED · ${label}`, `  ${message}`);
+        if (step.stopOnFailure !== false) break;
+      }
+    }
+
+    if (getLogPath()) {
+      logSshCall(
+        {
+          remote: readyTarget.remote,
+          command: `runbook:end ${runbook.name}`,
+          type: "runbook",
+          cwd: ctx.cwd,
+          mode: "command",
+          environment: readyTarget.environment,
+          profile: readyTarget.profile,
+          source: readyTarget.source,
+          decision: "executed",
+        },
+        getLogPath()!,
+      );
+    }
+
+    const result = resultLines.join("\n");
+    if (ctx.hasUI) {
+      await ctx.ui.editor(`SSH Runbook Result: ${runbook.name}`, result);
+    } else {
+      console.log(result);
+    }
+  };
+
   pi.registerCommand("ssh-run", {
     description: "Run a remote command via SSH (example: /ssh-run app-prod ls -la)",
     handler: async (args, ctx) => {
@@ -1564,6 +1789,73 @@ export default function sshExtension(pi: ExtensionAPI) {
       } else {
         console.log(summary.display || "(no entries)");
       }
+    },
+  });
+
+  pi.registerCommand("ssh-runbooks", {
+    description: "List available SSH runbooks from project and global runbook directories",
+    handler: async (_args, ctx) => {
+      const runbooks = listSshRunbooks(ctx.cwd);
+      const message = buildRunbookListing(runbooks, ctx.cwd);
+      if (ctx.hasUI) {
+        await ctx.ui.editor("SSH Runbooks", message);
+      } else {
+        console.log(message);
+      }
+    },
+  });
+
+  pi.registerCommand("ssh-runbook", {
+    description: "Preview and execute a configured SSH runbook",
+    handler: async (args, ctx) => {
+      reloadConfig(ctx.cwd);
+      const runbooks = listSshRunbooks(ctx.cwd);
+      if (runbooks.length === 0) {
+        const message = buildRunbookListing(runbooks, ctx.cwd);
+        if (ctx.hasUI) {
+          await ctx.ui.editor("SSH Runbooks", message);
+        } else {
+          console.log(message);
+        }
+        return;
+      }
+
+      const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
+      let overrideTarget: string | undefined;
+      const nameTokens: string[] = [];
+      for (let index = 0; index < tokens.length; index++) {
+        const token = tokens[index];
+        if (token === "--target" && tokens[index + 1]) {
+          overrideTarget = tokens[index + 1];
+          index += 1;
+          continue;
+        }
+        nameTokens.push(token);
+      }
+
+      let runbook: LoadedSshRunbook | undefined;
+      const requestedName = nameTokens.join(" ").trim();
+      if (requestedName) {
+        runbook = runbooks.find((item) => item.name === requestedName);
+      }
+
+      if (!runbook) {
+        if (!ctx.hasUI) {
+          console.log(`Usage: /ssh-runbook <name> [--target <target>]\n\n${buildRunbookListing(runbooks, ctx.cwd)}`);
+          return;
+        }
+        const items = runbooks.map(formatRunbookChoice);
+        const selected = await ctx.ui.select("Select SSH runbook", items);
+        if (!selected) return;
+        runbook = runbooks[items.indexOf(selected)];
+      }
+
+      if (!runbook) {
+        ctx.hasUI ? ctx.ui.notify("Runbook not found.", "error") : console.error("Runbook not found.");
+        return;
+      }
+
+      await executeRunbook(ctx, runbook, overrideTarget);
     },
   });
 

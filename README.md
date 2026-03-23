@@ -126,6 +126,19 @@ The extension now includes a TUI-first target manager:
 - view both project-local and global targets in one place
 - import global targets into project-local config for safe per-project overrides
 
+### 7. SSH runbooks
+
+You can store JSON runbooks in:
+- project: `<project>/.pi/ssh/runbooks/*.json`
+- global: `~/.pi/agent/ssh/runbooks/*.json`
+
+Runbooks let you:
+- define repeatable operational checklists
+- bind a default target to a named workflow
+- preview steps before execution
+- require per-runbook or per-step confirmation
+- keep execution tied to the same SSH guardrails and logs
+
 ---
 
 ## Install
@@ -186,6 +199,8 @@ After that, use `/ssh-manage` to add, edit, remove, review, filter/search, impor
 /ssh-context
 /ssh-health
 /ssh-summary
+/ssh-runbooks
+/ssh-runbook
 /ssh-disconnect
 ```
 
@@ -263,6 +278,8 @@ The manager shows both:
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path
 - `/ssh-health [target]` — verify connectivity and required remote tools on demand
 - `/ssh-summary [--format text|markdown|json|raw] [--output <path>] [--last] [--include-entries] [--raw]` — review or export the current/recent SSH session summary
+- `/ssh-runbooks` — list available project-local and global SSH runbooks
+- `/ssh-runbook <name> [--target <target>]` — preview and execute a named SSH runbook
 - `/ssh-targets` — list project-local and global profiles with source markers
 - `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
 
@@ -273,6 +290,14 @@ Example summary exports:
 /ssh-summary --format markdown --include-entries --output .pi/ssh/reports/latest.md
 /ssh-summary --format json --output .pi/ssh/reports/latest.json --last
 /ssh-summary --raw --output .pi/ssh/reports/latest.jsonl --last
+```
+
+Example runbook usage:
+
+```text
+/ssh-runbooks
+/ssh-runbook prod-health-check
+/ssh-runbook staging-deploy-smoke --target staging-app
 ```
 
 ---
@@ -303,6 +328,8 @@ If you want copy-paste-ready templates for common setups, use the files in [`exa
 - [`examples/customer-environments.config.json`](./examples/customer-environments.config.json)
 - [`examples/global-shared-platform.config.json`](./examples/global-shared-platform.config.json)
 - [`examples/project-local-overrides.config.json`](./examples/project-local-overrides.config.json)
+- [`examples/runbooks/prod-health-check.json`](./examples/runbooks/prod-health-check.json)
+- [`examples/runbooks/staging-deploy-smoke.json`](./examples/runbooks/staging-deploy-smoke.json)
 
 ```json
 {
@@ -350,6 +377,7 @@ If you want copy-paste-ready templates for common setups, use the files in [`exa
 A practical enterprise setup is:
 - keep shared targets such as bastions, platform hosts, and approved base profiles in the global config
 - keep project-specific names, cwd values, aliases, and overrides in the local project config
+- keep shared operational runbooks in the global runbook directory and project-specific runbooks in the project runbook directory
 - use `/ssh-manage` to view both layers and import a global target into the project when you need a local override
 
 That gives you:
@@ -392,6 +420,7 @@ This package already includes the agreed enterprise track features:
 - remote `grep` currently expects `rg` on the remote host
 - target handling is config-driven; this version includes TUI setup and target management, but still keeps JSON as the source of truth
 - the TUI manager edits only project-local config; global targets are visible and importable, but remain read-only there
+- runbooks currently use JSON files; this version does not yet provide a markdown/frontmatter runbook format
 - logs are structured JSONL locally, but no external export sink is included yet
 - historical summaries are session-scoped; this version does not provide arbitrary cross-session analytics
 

@@ -89,6 +89,29 @@ export interface SshConfigTemplateInput {
   requiresConfirmation?: boolean;
 }
 
+export interface SshRunbookStep {
+  title?: string;
+  command: string;
+  confirm?: boolean;
+  expectedExitCodes?: number[];
+  stopOnFailure?: boolean;
+}
+
+export interface SshRunbookDefinition {
+  name: string;
+  title: string;
+  description?: string;
+  target?: string;
+  requiresConfirmation?: boolean;
+  tags?: string[];
+  steps: SshRunbookStep[];
+}
+
+export interface LoadedSshRunbook extends SshRunbookDefinition {
+  source: "project" | "global";
+  path: string;
+}
+
 export const OUTPUT_MAX_LINES = 2000;
 export const OUTPUT_MAX_BYTES = 50 * 1024;
 export const SSH_PROMPT_HINT =
@@ -598,6 +621,79 @@ export function createStarterSshConfig(input: SshConfigTemplateInput): string {
   }
 
   return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+function getRunbookDirs(cwd: string): Array<{ source: "project" | "global"; dir: string }> {
+  return [
+    { source: "global", dir: path.join(getAgentDir(), "ssh", "runbooks") },
+    { source: "project", dir: path.join(cwd, ".pi", "ssh", "runbooks") },
+  ];
+}
+
+function normalizeRunbookStep(raw: unknown): SshRunbookStep | null {
+  if (typeof raw === "string") {
+    const command = raw.trim();
+    return command ? { command } : null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const command = typeof record.command === "string" ? record.command.trim() : "";
+  if (!command) return null;
+  return {
+    title: typeof record.title === "string" && record.title.trim() ? record.title.trim() : undefined,
+    command,
+    confirm: typeof record.confirm === "boolean" ? record.confirm : undefined,
+    expectedExitCodes: Array.isArray(record.expectedExitCodes)
+      ? record.expectedExitCodes.map((value) => Number(value)).filter((value) => Number.isInteger(value))
+      : undefined,
+    stopOnFailure: typeof record.stopOnFailure === "boolean" ? record.stopOnFailure : undefined,
+  };
+}
+
+export function normalizeSshRunbook(raw: unknown, fallbackName: string): SshRunbookDefinition | null {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const name = typeof record.name === "string" && record.name.trim() ? record.name.trim() : fallbackName;
+  const title = typeof record.title === "string" && record.title.trim() ? record.title.trim() : name;
+  const steps = Array.isArray(record.steps) ? record.steps.map(normalizeRunbookStep).filter(Boolean) as SshRunbookStep[] : [];
+  if (!name || steps.length === 0) return null;
+
+  return {
+    name,
+    title,
+    description: typeof record.description === "string" && record.description.trim() ? record.description.trim() : undefined,
+    target: typeof record.target === "string" && record.target.trim() ? record.target.trim() : undefined,
+    requiresConfirmation: typeof record.requiresConfirmation === "boolean" ? record.requiresConfirmation : undefined,
+    tags: Array.isArray(record.tags) ? record.tags.map((value) => String(value).trim()).filter(Boolean) : undefined,
+    steps,
+  };
+}
+
+export function listSshRunbooks(cwd: string): LoadedSshRunbook[] {
+  const merged = new Map<string, LoadedSshRunbook>();
+
+  for (const { source, dir } of getRunbookDirs(cwd)) {
+    if (!fs.existsSync(dir)) continue;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const filePath = path.join(dir, entry.name);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+        const fallbackName = entry.name.replace(/\.json$/i, "");
+        const runbook = normalizeSshRunbook(parsed, fallbackName);
+        if (!runbook) continue;
+        merged.set(runbook.name, {
+          ...runbook,
+          source,
+          path: filePath,
+        });
+      } catch {
+        // ignore invalid runbooks
+      }
+    }
+  }
+
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function readSshLogEntries(logFilePath: string): SshLogEntry[] {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Adds SSH runbook discovery from project-local and global runbook directories
+- Adds `/ssh-runbooks` and `/ssh-runbook` for listing, previewing, and executing repeatable SSH workflows
+- Adds example runbooks and documentation for project/global runbook organization
+
 ## 0.1.6
 
 - Adds filter/search support inside `/ssh-manage` for large local/global target catalogs

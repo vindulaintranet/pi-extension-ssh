@@ -1,0 +1,26 @@
+{
+  "name": "prod-health-check",
+  "title": "Production health check",
+  "description": "Verify basic production health indicators before or after an incident change.",
+  "target": "prod-app",
+  "requiresConfirmation": true,
+  "tags": ["prod", "health", "incident"],
+  "steps": [
+    {
+      "title": "Show current directory",
+      "command": "pwd"
+    },
+    {
+      "title": "Show running containers",
+      "command": "docker ps"
+    },
+    {
+      "title": "Check recent app logs",
+      "command": "docker logs --tail 100 app"
+    },
+    {
+      "title": "List listening ports",
+      "command": "ss -ltnp"
+    }
+  ]
+}

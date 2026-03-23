@@ -13,11 +13,16 @@ The files in `examples/` are different:
 
 ## Available templates
 
+### SSH target configs
 - `dev-staging-prod.config.json` — classic internal app environments
 - `bastion-jumpbox.config.json` — bastion/jump-host oriented setup
 - `customer-environments.config.json` — multiple customer/region targets
 - `global-shared-platform.config.json` — global/shared platform-owned targets
 - `project-local-overrides.config.json` — project-local overrides layered on top of shared/global targets
+
+### SSH runbooks
+- `runbooks/prod-health-check.json` — production-oriented health verification flow
+- `runbooks/staging-deploy-smoke.json` — staging deploy smoke-check flow
 
 ## Enterprise pattern
 
@@ -32,7 +37,7 @@ A common setup is:
 2. Copy it to the right place:
    - project-local: `.pi/ssh/config.json`
    - global/shared: `~/.pi/agent/ssh/config.json`
-3. Replace hostnames, usernames, paths, and blocked commands for your environment.
+3. Replace hostnames, usernames, paths, blocked commands, and runbook steps for your environment.
 4. Run:
 
 ```bash
