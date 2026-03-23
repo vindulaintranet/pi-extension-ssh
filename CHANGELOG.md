@@ -3,7 +3,10 @@
 ## Unreleased
 
 - Adds SSH runbook discovery from project-local and global runbook directories
-- Adds `/ssh-runbooks` and `/ssh-runbook` for listing, previewing, and executing repeatable SSH workflows
+- Adds Markdown/frontmatter runbook support while keeping JSON runbooks supported
+- Adds `/ssh-runbooks` filtering/search for larger runbook catalogs
+- Adds `/ssh-runbook` parameter overrides such as `--service`, `--container`, and `--path`
+- Adds runbook reports into `/ssh-summary` exports when runbooks were executed in the session
 - Adds example runbooks and documentation for project/global runbook organization
 
 ## 0.1.6

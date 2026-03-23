@@ -21,8 +21,10 @@ The files in `examples/` are different:
 - `project-local-overrides.config.json` — project-local overrides layered on top of shared/global targets
 
 ### SSH runbooks
-- `runbooks/prod-health-check.json` — production-oriented health verification flow
-- `runbooks/staging-deploy-smoke.json` — staging deploy smoke-check flow
+- `runbooks/prod-health-check.md` — human-friendly Markdown+frontmatter production health verification flow
+- `runbooks/staging-deploy-smoke.md` — human-friendly Markdown+frontmatter staging smoke-check flow
+- `runbooks/prod-health-check.json` — structured JSON version of the production health flow
+- `runbooks/staging-deploy-smoke.json` — structured JSON version of the staging smoke flow
 
 ## Enterprise pattern
 
@@ -30,6 +32,7 @@ A common setup is:
 - store shared, centrally managed targets in `~/.pi/agent/ssh/config.json`
 - store project-specific targets and overrides in `.pi/ssh/config.json`
 - use `/ssh-manage` to view both layers, filter/search large target sets, and import global targets into the project when needed
+- use `/ssh-runbooks` and `/ssh-runbook` for human-readable operational checklists with optional parameters such as `service`, `container`, and `path`
 
 ## How to use
 

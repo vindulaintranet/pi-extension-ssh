@@ -128,15 +128,18 @@ The extension now includes a TUI-first target manager:
 
 ### 7. SSH runbooks
 
-You can store JSON runbooks in:
-- project: `<project>/.pi/ssh/runbooks/*.json`
-- global: `~/.pi/agent/ssh/runbooks/*.json`
+You can store runbooks in:
+- project: `<project>/.pi/ssh/runbooks/*.{md,markdown,json}`
+- global: `~/.pi/agent/ssh/runbooks/*.{md,markdown,json}`
+
+Markdown runbooks use frontmatter plus fenced command blocks, which makes them easier to read and review.
 
 Runbooks let you:
 - define repeatable operational checklists
 - bind a default target to a named workflow
 - preview steps before execution
 - require per-runbook or per-step confirmation
+- pass parameters such as `service`, `container`, and `path`
 - keep execution tied to the same SSH guardrails and logs
 
 ---
@@ -277,9 +280,9 @@ The manager shows both:
 - `/ssh-disconnect` — leave the active SSH session target
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path
 - `/ssh-health [target]` — verify connectivity and required remote tools on demand
-- `/ssh-summary [--format text|markdown|json|raw] [--output <path>] [--last] [--include-entries] [--raw]` — review or export the current/recent SSH session summary
-- `/ssh-runbooks` — list available project-local and global SSH runbooks
-- `/ssh-runbook <name> [--target <target>]` — preview and execute a named SSH runbook
+- `/ssh-summary [--format text|markdown|json|raw] [--output <path>] [--last] [--include-entries] [--raw]` — review or export the current/recent SSH session summary, including runbook reports when present
+- `/ssh-runbooks [query|--filter <query>]` — list or filter available project-local and global SSH runbooks
+- `/ssh-runbook <name> [--target <target>] [--service <name>] [--container <name>] [--path <path>] [--filter <query>]` — preview and execute a named SSH runbook with parameter overrides
 - `/ssh-targets` — list project-local and global profiles with source markers
 - `/ssh-run <target> <command>` — run one explicit remote command without switching the whole session
 
@@ -296,8 +299,9 @@ Example runbook usage:
 
 ```text
 /ssh-runbooks
-/ssh-runbook prod-health-check
-/ssh-runbook staging-deploy-smoke --target staging-app
+/ssh-runbooks prod
+/ssh-runbook prod-health-check --container app
+/ssh-runbook staging-deploy-smoke --target staging-app --service web --path /srv/app
 ```
 
 ---
@@ -328,6 +332,8 @@ If you want copy-paste-ready templates for common setups, use the files in [`exa
 - [`examples/customer-environments.config.json`](./examples/customer-environments.config.json)
 - [`examples/global-shared-platform.config.json`](./examples/global-shared-platform.config.json)
 - [`examples/project-local-overrides.config.json`](./examples/project-local-overrides.config.json)
+- [`examples/runbooks/prod-health-check.md`](./examples/runbooks/prod-health-check.md)
+- [`examples/runbooks/staging-deploy-smoke.md`](./examples/runbooks/staging-deploy-smoke.md)
 - [`examples/runbooks/prod-health-check.json`](./examples/runbooks/prod-health-check.json)
 - [`examples/runbooks/staging-deploy-smoke.json`](./examples/runbooks/staging-deploy-smoke.json)
 
@@ -378,6 +384,7 @@ A practical enterprise setup is:
 - keep shared targets such as bastions, platform hosts, and approved base profiles in the global config
 - keep project-specific names, cwd values, aliases, and overrides in the local project config
 - keep shared operational runbooks in the global runbook directory and project-specific runbooks in the project runbook directory
+- prefer Markdown+frontmatter runbooks for human review, and keep JSON as an escape hatch for more structured cases
 - use `/ssh-manage` to view both layers and import a global target into the project when you need a local override
 
 That gives you:
@@ -420,7 +427,7 @@ This package already includes the agreed enterprise track features:
 - remote `grep` currently expects `rg` on the remote host
 - target handling is config-driven; this version includes TUI setup and target management, but still keeps JSON as the source of truth
 - the TUI manager edits only project-local config; global targets are visible and importable, but remain read-only there
-- runbooks currently use JSON files; this version does not yet provide a markdown/frontmatter runbook format
+- runbooks support Markdown+frontmatter and JSON, but this version does not yet provide advanced templating, branching, or variable typing
 - logs are structured JSONL locally, but no external export sink is included yet
 - historical summaries are session-scoped; this version does not provide arbitrary cross-session analytics
 

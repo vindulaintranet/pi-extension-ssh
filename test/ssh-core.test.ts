@@ -315,6 +315,12 @@ test("normalizeSshRunbook supports string and object steps", () => {
     {
       title: "Production health",
       target: "prod-app",
+      parameters: {
+        container: {
+          description: "Container name",
+          default: "app",
+        },
+      },
       steps: [
         "pwd",
         { title: "List processes", command: "ps aux", confirm: false, expectedExitCodes: [0] },
@@ -326,6 +332,7 @@ test("normalizeSshRunbook supports string and object steps", () => {
   assert.equal(runbook?.name, "prod-health");
   assert.equal(runbook?.title, "Production health");
   assert.equal(runbook?.target, "prod-app");
+  assert.equal(runbook?.parameters?.container?.default, "app");
   assert.equal(runbook?.steps[0]?.command, "pwd");
   assert.equal(runbook?.steps[1]?.title, "List processes");
 });
@@ -338,8 +345,21 @@ test("listSshRunbooks merges global and project runbooks with project override",
 
     await fs.mkdir(path.join(agentDir, "ssh", "runbooks"), { recursive: true });
     await fs.writeFile(
-      path.join(agentDir, "ssh", "runbooks", "shared-checks.json"),
-      JSON.stringify({ title: "Shared checks", steps: ["pwd"] }),
+      path.join(agentDir, "ssh", "runbooks", "shared-checks.md"),
+      [
+        "---",
+        "title: Shared checks",
+        "target: shared-support",
+        "parameters:",
+        "  service:",
+        "    default: app",
+        "---",
+        "## Steps",
+        "### Show current directory",
+        "```sh",
+        "pwd",
+        "```",
+      ].join("\n"),
       "utf8",
     );
 
@@ -350,8 +370,28 @@ test("listSshRunbooks merges global and project runbooks with project override",
       "utf8",
     );
     await fs.writeFile(
-      path.join(dir, ".pi", "ssh", "runbooks", "deploy-checks.json"),
-      JSON.stringify({ title: "Deploy checks", target: "staging-app", steps: ["pwd", { command: "docker ps" }] }),
+      path.join(dir, ".pi", "ssh", "runbooks", "deploy-checks.md"),
+      [
+        "---",
+        "title: Deploy checks",
+        "target: staging-app",
+        "parameters:",
+        "  container:",
+        "    default: app",
+        "tags:",
+        "  - staging",
+        "  - smoke",
+        "---",
+        "## Steps",
+        "### Show current directory",
+        "```sh",
+        "pwd",
+        "```",
+        "### Check container [confirm]",
+        "```sh",
+        "docker logs --tail 20 {{container}}",
+        "```",
+      ].join("\n"),
       "utf8",
     );
 
@@ -361,6 +401,9 @@ test("listSshRunbooks merges global and project runbooks with project override",
       assert.equal(runbooks.find((runbook) => runbook.name === "shared-checks")?.title, "Project checks");
       assert.equal(runbooks.find((runbook) => runbook.name === "shared-checks")?.source, "project");
       assert.equal(runbooks.find((runbook) => runbook.name === "deploy-checks")?.target, "staging-app");
+      assert.equal(runbooks.find((runbook) => runbook.name === "deploy-checks")?.parameters?.container?.default, "app");
+      assert.equal(runbooks.find((runbook) => runbook.name === "deploy-checks")?.steps[1]?.confirm, true);
+      assert.equal(runbooks.find((runbook) => runbook.name === "deploy-checks")?.steps[1]?.command, "docker logs --tail 20 {{container}}");
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

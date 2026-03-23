@@ -97,6 +97,12 @@ export interface SshRunbookStep {
   stopOnFailure?: boolean;
 }
 
+export interface SshRunbookParameterDefinition {
+  description?: string;
+  default?: string;
+  required?: boolean;
+}
+
 export interface SshRunbookDefinition {
   name: string;
   title: string;
@@ -104,6 +110,7 @@ export interface SshRunbookDefinition {
   target?: string;
   requiresConfirmation?: boolean;
   tags?: string[];
+  parameters?: Record<string, SshRunbookParameterDefinition>;
   steps: SshRunbookStep[];
 }
 
@@ -630,6 +637,184 @@ function getRunbookDirs(cwd: string): Array<{ source: "project" | "global"; dir:
   ];
 }
 
+function parseFrontmatterScalar(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  if (/^-?\d+$/.test(trimmed)) return Number(trimmed);
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function countIndent(line: string): number {
+  const match = line.match(/^\s*/);
+  return match?.[0]?.length ?? 0;
+}
+
+function parseFrontmatterBlock(lines: string[], start: number, indent: number): { value: unknown; nextIndex: number } {
+  let index = start;
+  while (index < lines.length && !lines[index].trim()) index += 1;
+  if (index >= lines.length) return { value: {}, nextIndex: index };
+
+  const currentLine = lines[index];
+  if (countIndent(currentLine) < indent) {
+    return { value: {}, nextIndex: index };
+  }
+
+  if (currentLine.trim().startsWith("- ")) {
+    const items: unknown[] = [];
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim()) {
+        index += 1;
+        continue;
+      }
+      const lineIndent = countIndent(line);
+      if (lineIndent < indent || !line.trim().startsWith("- ")) break;
+      items.push(parseFrontmatterScalar(line.trim().slice(2)));
+      index += 1;
+    }
+    return { value: items, nextIndex: index };
+  }
+
+  const object: Record<string, unknown> = {};
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    const lineIndent = countIndent(line);
+    if (lineIndent < indent) break;
+    if (lineIndent > indent) {
+      index += 1;
+      continue;
+    }
+
+    const match = line.trim().match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!match) {
+      index += 1;
+      continue;
+    }
+
+    const key = match[1];
+    const rest = match[2];
+    if (rest) {
+      object[key] = parseFrontmatterScalar(rest);
+      index += 1;
+      continue;
+    }
+
+    const nested = parseFrontmatterBlock(lines, index + 1, indent + 2);
+    object[key] = nested.value;
+    index = nested.nextIndex;
+  }
+
+  return { value: object, nextIndex: index };
+}
+
+function parseMarkdownFrontmatter(text: string): { data: Record<string, unknown>; body: string } {
+  const normalized = text.replace(/^\uFEFF/, "");
+  const match = normalized.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!match) {
+    return { data: {}, body: normalized };
+  }
+
+  const frontmatter = match[1];
+  const body = match[2] ?? "";
+  const parsed = parseFrontmatterBlock(frontmatter.split(/\r?\n/), 0, 0).value;
+  return {
+    data: parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {},
+    body,
+  };
+}
+
+function parseMarkdownRunbookSteps(body: string): SshRunbookStep[] {
+  const lines = body.split(/\r?\n/);
+  const steps: SshRunbookStep[] = [];
+  let currentTitle: string | undefined;
+  let currentConfirm = false;
+  let inCode = false;
+  let fence = "```";
+  let buffer: string[] = [];
+
+  const flushStep = () => {
+    const command = buffer.join("\n").trim();
+    if (!command) return;
+    const title = currentTitle?.replace(/\s*\[confirm\]\s*$/i, "").trim() || undefined;
+    steps.push({
+      title,
+      command,
+      ...(currentConfirm ? { confirm: true } : {}),
+    });
+    buffer = [];
+    currentTitle = undefined;
+    currentConfirm = false;
+  };
+
+  for (const line of lines) {
+    if (!inCode) {
+      const heading = line.match(/^#{2,6}\s+(.*)$/);
+      if (heading) {
+        const value = heading[1].trim();
+        if (!/^steps?$/i.test(value)) {
+          currentTitle = value;
+          currentConfirm = /\[confirm\]/i.test(value);
+        }
+        continue;
+      }
+
+      const bullet = line.match(/^[-*]\s+(.*)$/);
+      if (bullet && !line.includes("```")) {
+        const value = bullet[1].trim();
+        currentTitle = value;
+        currentConfirm = /\[confirm\]/i.test(value);
+        continue;
+      }
+
+      const fenceMatch = line.match(/^(```+|~~~+)(.*)$/);
+      if (fenceMatch) {
+        inCode = true;
+        fence = fenceMatch[1];
+        buffer = [];
+        continue;
+      }
+      continue;
+    }
+
+    if (line.startsWith(fence)) {
+      inCode = false;
+      flushStep();
+      continue;
+    }
+    buffer.push(line);
+  }
+
+  if (inCode) {
+    flushStep();
+  }
+
+  return steps;
+}
+
+function normalizeRunbookParameters(raw: unknown): Record<string, SshRunbookParameterDefinition> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const result: Record<string, SshRunbookParameterDefinition> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const record = value as Record<string, unknown>;
+    result[key] = {
+      description: typeof record.description === "string" && record.description.trim() ? record.description.trim() : undefined,
+      default: typeof record.default === "string" ? record.default : undefined,
+      required: typeof record.required === "boolean" ? record.required : undefined,
+    };
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 function normalizeRunbookStep(raw: unknown): SshRunbookStep | null {
   if (typeof raw === "string") {
     const command = raw.trim();
@@ -664,8 +849,16 @@ export function normalizeSshRunbook(raw: unknown, fallbackName: string): SshRunb
     target: typeof record.target === "string" && record.target.trim() ? record.target.trim() : undefined,
     requiresConfirmation: typeof record.requiresConfirmation === "boolean" ? record.requiresConfirmation : undefined,
     tags: Array.isArray(record.tags) ? record.tags.map((value) => String(value).trim()).filter(Boolean) : undefined,
+    parameters: normalizeRunbookParameters(record.parameters),
     steps,
   };
+}
+
+function normalizeMarkdownSshRunbook(markdown: string, fallbackName: string): SshRunbookDefinition | null {
+  const { data, body } = parseMarkdownFrontmatter(markdown);
+  const steps = parseMarkdownRunbookSteps(body);
+  if (steps.length === 0) return null;
+  return normalizeSshRunbook({ ...data, steps }, fallbackName);
 }
 
 export function listSshRunbooks(cwd: string): LoadedSshRunbook[] {
@@ -675,12 +868,14 @@ export function listSshRunbooks(cwd: string): LoadedSshRunbook[] {
     if (!fs.existsSync(dir)) continue;
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      if (!entry.isFile() || !/\.(json|md|markdown)$/i.test(entry.name)) continue;
       const filePath = path.join(dir, entry.name);
       try {
-        const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-        const fallbackName = entry.name.replace(/\.json$/i, "");
-        const runbook = normalizeSshRunbook(parsed, fallbackName);
+        const content = fs.readFileSync(filePath, "utf8");
+        const fallbackName = entry.name.replace(/\.(json|md|markdown)$/i, "");
+        const runbook = entry.name.endsWith(".json")
+          ? normalizeSshRunbook(JSON.parse(content) as unknown, fallbackName)
+          : normalizeMarkdownSshRunbook(content, fallbackName);
         if (!runbook) continue;
         merged.set(runbook.name, {
           ...runbook,
