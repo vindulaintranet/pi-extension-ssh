@@ -139,7 +139,7 @@ pi install git:github.com/vindulaintranet/pi-extension-ssh
 ### Pin to a release tag
 
 ```bash
-pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.5
+pi install git:github.com/vindulaintranet/pi-extension-ssh@v0.1.6
 ```
 
 ### From a local path
@@ -178,7 +178,7 @@ pi -e ./ssh.ts --ssh user@host:/srv/app
 
 If no targets exist yet, the extension can now open a TUI wizard and create `.pi/ssh/config.json` for you.
 
-After that, use `/ssh-manage` to add, edit, remove, review, or connect targets without manually opening the JSON first.
+After that, use `/ssh-manage` to add, edit, remove, review, filter/search, import, or connect targets without manually opening the JSON first.
 
 ### SSH operations context
 
@@ -252,11 +252,12 @@ Manage project-local SSH targets through the TUI:
 The manager shows both:
 - project-local targets you can edit here
 - global targets that are read-only here, but importable into the project
+- a filter/search flow so large target sets are easier to navigate
 
 ## Operational commands
 
 - `/ssh-configure` — create `.pi/ssh/config.json` through a TUI wizard
-- `/ssh-manage` — add, edit, remove, review, connect, and import global targets into project-local config from the TUI
+- `/ssh-manage` — add, edit, remove, review, filter/search, connect, and import global targets into project-local config from the TUI
 - `/ssh-connect` — choose a configured target interactively or pass one explicitly; offers config creation when none exist
 - `/ssh-disconnect` — leave the active SSH session target
 - `/ssh-context` — inspect the active target, policies, preflight status, and log path

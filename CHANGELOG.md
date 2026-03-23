@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Adds filter/search support inside `/ssh-manage` for large local/global target catalogs
+- Refreshes docs to highlight manager search for enterprise-scale target sets
+
 ## 0.1.5
 
 - Extends `/ssh-manage` with local/global target visibility, shadowed-target markers, and global-to-local import

@@ -97,6 +97,7 @@ function formatManagedTargetChoice(target: ManagedTargetView, active: boolean): 
 function buildManagedTargets(config: SshConfig, origin: ManagerTargetOrigin, localNames = new Set<string>()): ManagedTargetView[] {
   return listConfiguredTargets(config).map((target) => ({
     ...target,
+    aliases: config.targets[target.name]?.aliases,
     origin,
     shadowed: origin === "global" ? localNames.has(target.name) : false,
   }));
@@ -111,6 +112,24 @@ function renderTargetSection(title: string, targets: ManagedTargetView[], active
   ];
 }
 
+function filterManagedTargets(targets: ManagedTargetView[], query: string): ManagedTargetView[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return targets;
+  return targets.filter((target) => {
+    const haystack = [
+      target.name,
+      target.remote,
+      target.cwd || "",
+      target.environment,
+      target.origin,
+      ...(target.aliases ?? []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalized);
+  });
+}
+
 function buildManagerOverview(
   projectConfigPath: string,
   globalConfigPath: string,
@@ -118,6 +137,7 @@ function buildManagerOverview(
   globalTargets: ManagedTargetView[],
   activeProfile?: string,
   globalParseError?: string,
+  filterQuery?: string,
 ): string {
   const lines = [
     "SSH Target Manager",
@@ -129,6 +149,10 @@ function buildManagerOverview(
     ...renderTargetSection("Global targets (read-only here)", globalTargets, activeProfile),
   ];
 
+  if (filterQuery?.trim()) {
+    lines.push("", `Filter: ${filterQuery.trim()}`);
+  }
+
   if (globalParseError) {
     lines.push("", `Global config warning: ${globalParseError}`);
   }
@@ -137,12 +161,14 @@ function buildManagerOverview(
   return lines.join("\n");
 }
 
-function buildTargetManagerActionList(localTargets: ManagedTargetView[], globalTargets: ManagedTargetView[]): string[] {
+function buildTargetManagerActionList(localTargets: ManagedTargetView[], globalTargets: ManagedTargetView[], filterQuery: string): string[] {
   return [
     localTargets.length === 0 ? "Add first local target" : "Add local target",
     ...(localTargets.length > 0 ? ["Edit local target", "Remove local target"] : []),
     ...(globalTargets.length > 0 ? ["Import global target to local"] : []),
     ...(localTargets.length > 0 || globalTargets.some((target) => !target.shadowed) ? ["Connect to target"] : []),
+    "Set filter",
+    ...(filterQuery.trim() ? ["Clear filter"] : []),
     "Review local JSON",
     "Exit",
   ];
@@ -214,6 +240,7 @@ type ManagedTargetView = {
   cwd?: string;
   environment: string;
   origin: ManagerTargetOrigin;
+  aliases?: string[];
   shadowed?: boolean;
 };
 
@@ -852,6 +879,7 @@ export default function sshExtension(pi: ExtensionAPI) {
       return;
     }
 
+    let filterQuery = "";
     while (true) {
       const raw = await loadEditableProjectConfig(ctx);
       if (!raw) return;
@@ -860,15 +888,29 @@ export default function sshExtension(pi: ExtensionAPI) {
       const localConfig = normalizeSshConfig(raw);
       const globalConfig = normalizeSshConfig(globalLoaded.raw);
       const localNames = new Set(Object.keys(localConfig.targets));
-      const localTargets = buildManagedTargets(localConfig, "local");
-      const globalTargets = buildManagedTargets(globalConfig, "global", localNames);
+      const allLocalTargets = buildManagedTargets(localConfig, "local");
+      const allGlobalTargets = buildManagedTargets(globalConfig, "global", localNames);
+      const localTargets = filterManagedTargets(allLocalTargets, filterQuery);
+      const globalTargets = filterManagedTargets(allGlobalTargets, filterQuery);
       const projectConfigPath = path.relative(ctx.cwd, getProjectSshConfigPath(ctx.cwd)) || getProjectSshConfigPath(ctx.cwd);
       const globalConfigPath = getGlobalSshConfigPath();
-      const overview = buildManagerOverview(projectConfigPath, globalConfigPath, localTargets, globalTargets, getTarget()?.profile, globalLoaded.parseError);
-      const actions = buildTargetManagerActionList(localTargets, globalTargets);
+      const overview = buildManagerOverview(projectConfigPath, globalConfigPath, localTargets, globalTargets, getTarget()?.profile, globalLoaded.parseError, filterQuery);
+      const actions = buildTargetManagerActionList(localTargets, globalTargets, filterQuery);
 
       const choice = await ctx.ui.select(overview, actions);
       if (!choice || choice === "Exit") return;
+
+      if (choice === "Set filter") {
+        const nextFilter = await ctx.ui.input("Filter SSH targets", filterQuery || "prod, bastion, customer-a...");
+        if (nextFilter === undefined) continue;
+        filterQuery = nextFilter.trim();
+        continue;
+      }
+
+      if (choice === "Clear filter") {
+        filterQuery = "";
+        continue;
+      }
 
       if (choice === "Add first local target" || choice === "Add local target") {
         const input = await collectTargetInputViaTui(ctx, "Add local SSH target");

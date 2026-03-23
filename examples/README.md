@@ -24,7 +24,7 @@ The files in `examples/` are different:
 A common setup is:
 - store shared, centrally managed targets in `~/.pi/agent/ssh/config.json`
 - store project-specific targets and overrides in `.pi/ssh/config.json`
-- use `/ssh-manage` to view both layers and import global targets into the project when needed
+- use `/ssh-manage` to view both layers, filter/search large target sets, and import global targets into the project when needed
 
 ## How to use
 
