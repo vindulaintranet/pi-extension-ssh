@@ -33,7 +33,7 @@ With this package installed, Pi can treat the remote host as the working environ
 
 That matters when you want:
 - repeatable remote sessions instead of one-off SSH hops
-- `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` operating remotely
+- `ssh-read`, `ssh-write`, `ssh-edit`, `ssh-bash`, `ssh-grep`, `ssh-find`, `ssh-ls` operating remotely by default
 - an audit trail in `.pi/ssh/ssh.log`
 - stable target names like `prod-app`, `staging-app`, `bastion-eu`
 - environment-aware controls for sensitive systems
@@ -58,11 +58,22 @@ pi -e ./ssh.ts --ssh prod-app
 
 When `--ssh` is active:
 - Pi resolves a remote working directory
-- `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` operate on the remote machine
+- `ssh-read`, `ssh-write`, `ssh-edit`, `ssh-bash`, `ssh-grep`, `ssh-find`, `ssh-ls` operate on the remote machine by default
 - user `!commands` also execute remotely
 - the status bar shows the active remote target
 - connect runs an automatic preflight check and surfaces missing remote tools early
 - the system prompt reflects the remote cwd and environment
+
+If you explicitly want the SSH extension to override the built-in tool names (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`), set this in `.pi/ssh/config.json` or `~/.pi/agent/ssh/config.json`:
+
+```json
+{
+  "toolRoutingMode": "builtin-overrides"
+}
+```
+
+Default:
+- `toolRoutingMode: "namespaced"` to avoid conflicts with tool wrappers such as `pi-tool-display`
 
 ### 2. `/ssh-run`
 

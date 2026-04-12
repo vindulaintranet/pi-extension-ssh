@@ -125,6 +125,23 @@ test("normalize config supports targets, aliases, allowlist and environment poli
   assert.equal(config.targets["prod-app"]?.remote, "ops@prod-host");
   assert.deepEqual(config.targets["prod-app"]?.aliases, ["production"]);
   assert.deepEqual(config.environmentPolicies.prod?.blockedCommands, ["terraform destroy"]);
+  assert.equal(config.toolRoutingMode, "namespaced");
+});
+
+test("normalize config supports explicit builtin tool override mode", () => {
+  const config = normalizeSshConfig({
+    toolRoutingMode: "builtin-overrides",
+  });
+
+  assert.equal(config.toolRoutingMode, "builtin-overrides");
+});
+
+test("normalize config keeps backward compatibility with registerToolOverrides", () => {
+  const config = normalizeSshConfig({
+    registerToolOverrides: true,
+  });
+
+  assert.equal(config.toolRoutingMode, "builtin-overrides");
 });
 
 test("loadSshConfig merges global and project config", async () => {
@@ -165,6 +182,7 @@ test("loadSshConfig merges global and project config", async () => {
       assert.equal(config.targets["prod-app"]?.remote, "ops@prod");
       assert.equal(config.allowlist[0], "staging-app");
       assert.deepEqual(config.environmentPolicies.prod?.blockedCommands, ["rm -rf"]);
+      assert.equal(config.toolRoutingMode, "namespaced");
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

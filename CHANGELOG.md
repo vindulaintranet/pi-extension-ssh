@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.8
+
+- Makes SSH tool routing namespaced by default with `ssh-read`, `ssh-write`, `ssh-edit`, `ssh-bash`, `ssh-grep`, `ssh-find`, and `ssh-ls`
+- Adds `toolRoutingMode: "builtin-overrides"` for explicit opt-in to overriding Pi built-in tool names
+- Keeps backward compatibility with legacy `registerToolOverrides: true`
+- Updates docs and tests for the new conflict-safe routing behavior
+
 ## 0.1.7
 
 - Adds SSH runbook discovery from project-local and global runbook directories

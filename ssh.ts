@@ -897,6 +897,16 @@ async function executeRemoteGrep(
   };
 }
 
+const SSH_TOOL_NAMES = {
+  read: "ssh-read",
+  write: "ssh-write",
+  edit: "ssh-edit",
+  bash: "ssh-bash",
+  ls: "ssh-ls",
+  find: "ssh-find",
+  grep: "ssh-grep",
+} as const;
+
 export default function sshExtension(pi: ExtensionAPI) {
   pi.registerFlag("ssh", { description: "SSH remote: target profile, user@host or user@host:/path", type: "string" });
 
@@ -923,6 +933,9 @@ export default function sshExtension(pi: ExtensionAPI) {
     sshConfig = loadSshConfig(cwd);
     return sshConfig;
   };
+  const usesBuiltinOverrides = () => sshConfig.toolRoutingMode === "builtin-overrides";
+  const toolName = <T extends keyof typeof SSH_TOOL_NAMES>(builtinName: T) =>
+    usesBuiltinOverrides() ? builtinName : SSH_TOOL_NAMES[builtinName];
 
   const ensureSshConfigViaTui = async (ctx: ExtensionContext): Promise<string | null> => {
     if (!ctx.hasUI) {
@@ -2249,96 +2262,170 @@ export default function sshExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     ...localRead,
+    name: toolName("read"),
+    description: usesBuiltinOverrides() ? localRead.description : `${localRead.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        const tool = createReadTool(localCwd, {
-          operations: createRemoteReadOps(target, localCwd, getLogPath()),
-        });
-        return tool.execute(id, params, signal, onUpdate);
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          const tool = createReadTool(localCwd, {
+            operations: createRemoteReadOps(target, localCwd, getLogPath()),
+          });
+          return tool.execute(id, params, signal, onUpdate);
+        }
+        return localRead.execute(id, params, signal, onUpdate);
       }
-      return localRead.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-read.");
+      }
+      const tool = createReadTool(localCwd, {
+        operations: createRemoteReadOps(target, localCwd, getLogPath()),
+      });
+      return tool.execute(id, params, signal, onUpdate);
     },
   });
 
   pi.registerTool({
     ...localWrite,
+    name: toolName("write"),
+    description: usesBuiltinOverrides() ? localWrite.description : `${localWrite.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        const tool = createWriteTool(localCwd, {
-          operations: createRemoteWriteOps(target, localCwd, getLogPath()),
-        });
-        return tool.execute(id, params, signal, onUpdate);
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          const tool = createWriteTool(localCwd, {
+            operations: createRemoteWriteOps(target, localCwd, getLogPath()),
+          });
+          return tool.execute(id, params, signal, onUpdate);
+        }
+        return localWrite.execute(id, params, signal, onUpdate);
       }
-      return localWrite.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-write.");
+      }
+      const tool = createWriteTool(localCwd, {
+        operations: createRemoteWriteOps(target, localCwd, getLogPath()),
+      });
+      return tool.execute(id, params, signal, onUpdate);
     },
   });
 
   pi.registerTool({
     ...localEdit,
+    name: toolName("edit"),
+    description: usesBuiltinOverrides() ? localEdit.description : `${localEdit.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        const tool = createEditTool(localCwd, {
-          operations: createRemoteEditOps(target, localCwd, getLogPath()),
-        });
-        return tool.execute(id, params, signal, onUpdate);
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          const tool = createEditTool(localCwd, {
+            operations: createRemoteEditOps(target, localCwd, getLogPath()),
+          });
+          return tool.execute(id, params, signal, onUpdate);
+        }
+        return localEdit.execute(id, params, signal, onUpdate);
       }
-      return localEdit.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-edit.");
+      }
+      const tool = createEditTool(localCwd, {
+        operations: createRemoteEditOps(target, localCwd, getLogPath()),
+      });
+      return tool.execute(id, params, signal, onUpdate);
     },
   });
 
   pi.registerTool({
     ...localBash,
+    name: toolName("bash"),
+    description: usesBuiltinOverrides() ? localBash.description : `${localBash.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        const tool = createBashTool(localCwd, {
-          operations: createRemoteBashOps(target, target.remoteCwd, localCwd, "bash", getLogPath()),
-        });
-        return tool.execute(id, params, signal, onUpdate);
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          const tool = createBashTool(localCwd, {
+            operations: createRemoteBashOps(target, target.remoteCwd, localCwd, "bash", getLogPath()),
+          });
+          return tool.execute(id, params, signal, onUpdate);
+        }
+        return localBash.execute(id, params, signal, onUpdate);
       }
-      return localBash.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-bash.");
+      }
+      const tool = createBashTool(localCwd, {
+        operations: createRemoteBashOps(target, target.remoteCwd || ".", localCwd, "bash", getLogPath()),
+      });
+      return tool.execute(id, params, signal, onUpdate);
     },
   });
 
   pi.registerTool({
     ...localLs,
+    name: toolName("ls"),
+    description: usesBuiltinOverrides() ? localLs.description : `${localLs.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        const tool = createLsTool(localCwd, {
-          operations: createRemoteLsOps(target, localCwd, getLogPath()),
-        });
-        return tool.execute(id, params, signal, onUpdate);
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          const tool = createLsTool(localCwd, {
+            operations: createRemoteLsOps(target, localCwd, getLogPath()),
+          });
+          return tool.execute(id, params, signal, onUpdate);
+        }
+        return localLs.execute(id, params, signal, onUpdate);
       }
-      return localLs.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-ls.");
+      }
+      const tool = createLsTool(localCwd, {
+        operations: createRemoteLsOps(target, localCwd, getLogPath()),
+      });
+      return tool.execute(id, params, signal, onUpdate);
     },
   });
 
   pi.registerTool({
     ...localFind,
+    name: toolName("find"),
+    description: usesBuiltinOverrides() ? localFind.description : `${localFind.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        const tool = createFindTool(localCwd, {
-          operations: createRemoteFindOps(target, localCwd, getLogPath()),
-        });
-        return tool.execute(id, params, signal, onUpdate);
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          const tool = createFindTool(localCwd, {
+            operations: createRemoteFindOps(target, localCwd, getLogPath()),
+          });
+          return tool.execute(id, params, signal, onUpdate);
+        }
+        return localFind.execute(id, params, signal, onUpdate);
       }
-      return localFind.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-find.");
+      }
+      const tool = createFindTool(localCwd, {
+        operations: createRemoteFindOps(target, localCwd, getLogPath()),
+      });
+      return tool.execute(id, params, signal, onUpdate);
     },
   });
 
   pi.registerTool({
     ...localGrep,
+    name: toolName("grep"),
+    description: usesBuiltinOverrides() ? localGrep.description : `${localGrep.description} over the active SSH target`,
     async execute(id, params, signal, onUpdate) {
       const target = getTarget();
-      if (target?.remoteCwd) {
-        return executeRemoteGrep(target, params as any, localCwd, getLogPath());
+      if (usesBuiltinOverrides()) {
+        if (target?.remoteCwd) {
+          return executeRemoteGrep(target, params as any, localCwd, getLogPath());
+        }
+        return localGrep.execute(id, params, signal, onUpdate);
       }
-      return localGrep.execute(id, params, signal, onUpdate);
+      if (!target) {
+        throw new Error("No active SSH target. Use /ssh-connect or --ssh before using ssh-grep.");
+      }
+      return executeRemoteGrep(target, params as any, localCwd, getLogPath());
     },
   });
 
@@ -2347,7 +2434,7 @@ export default function sshExtension(pi: ExtensionAPI) {
     logPath = ensureLogPath(ctx.cwd, logPath);
 
     const target = getTarget();
-    if (target && ["write", "edit"].includes(event.toolName)) {
+    if (target && [toolName("write"), toolName("edit")].includes(event.toolName as string)) {
       const policy = getEnvironmentPolicy(target.environment, sshConfig);
       const filePath = (event.input as { path?: string } | undefined)?.path || "(unknown path)";
       if (policy.confirmWriteOperations) {
@@ -2366,7 +2453,7 @@ export default function sshExtension(pi: ExtensionAPI) {
       }
     }
 
-    if (event.toolName === "bash") {
+    if (event.toolName === toolName("bash")) {
       const command = (event.input as { command?: string } | undefined)?.command || "";
 
       if (target) {
@@ -2541,6 +2628,7 @@ export default function sshExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event) => {
+    reloadConfig(localCwd);
     const target = getTarget();
     let systemPrompt = event.systemPrompt;
     if (target?.remoteCwd) {
@@ -2549,8 +2637,11 @@ export default function sshExtension(pi: ExtensionAPI) {
         `Current working directory: ${target.remoteCwd} (via SSH: ${target.remote}, env: ${target.environment})`,
       );
     }
-    if (!systemPrompt.includes(SSH_PROMPT_HINT)) {
-      systemPrompt = `${systemPrompt}\n\n${SSH_PROMPT_HINT}`;
+    const toolHint = usesBuiltinOverrides()
+      ? SSH_PROMPT_HINT
+      : `${SSH_PROMPT_HINT} When an SSH target is active, use ssh-read, ssh-write, ssh-edit, ssh-bash, ssh-grep, ssh-find, and ssh-ls for remote operations.`;
+    if (!systemPrompt.includes(toolHint)) {
+      systemPrompt = `${systemPrompt}\n\n${toolHint}`;
     }
     return { systemPrompt };
   });

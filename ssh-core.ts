@@ -68,6 +68,7 @@ export interface SshConfig {
   allowlist: string[];
   targets: Record<string, SshTargetProfile>;
   environmentPolicies: Record<string, SshEnvironmentPolicy>;
+  toolRoutingMode: "namespaced" | "builtin-overrides";
 }
 
 export interface ResolvedSshTarget {
@@ -251,10 +252,16 @@ export function normalizeSshConfig(raw: unknown): SshConfig {
     ? record.allowlist.map((entry) => String(entry).trim()).filter(Boolean)
     : [];
 
+  const toolRoutingMode =
+    record.toolRoutingMode === "builtin-overrides" || record.registerToolOverrides === true
+      ? "builtin-overrides"
+      : "namespaced";
+
   return {
     allowlist,
     targets,
     environmentPolicies,
+    toolRoutingMode,
   };
 }
 
@@ -266,6 +273,7 @@ function mergeConfigs(base: SshConfig, override: SshConfig): SshConfig {
       ...override.targets,
     },
     environmentPolicies: mergePolicies(base.environmentPolicies, override.environmentPolicies),
+    toolRoutingMode: override.toolRoutingMode ?? base.toolRoutingMode,
   };
 }
 
